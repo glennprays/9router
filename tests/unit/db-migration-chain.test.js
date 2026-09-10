@@ -36,7 +36,9 @@ describe("Schema migrations", () => {
     expect(tables).toEqual(expect.arrayContaining([
       "_meta", "settings", "providerConnections", "providerNodes",
       "proxyPools", "apiKeys", "combos", "kv", "usageHistory", "usageDaily", "requestDetails",
+      "teamBudgetPolicy", "teamUsage", "kiroAccountBudget", "kiroAccountUsage",
     ]));
+    expect(db.all(`PRAGMA index_list(kiroAccountUsage)`).map(i => i.name)).toContain("idx_kau_period");
   });
 
   it("existing DB at older schemaVersion → re-applies pending migrations on restart", async () => {

@@ -3,7 +3,7 @@
 // pre-change safety backup in migrate.js: when the stored version is lower,
 // one lightweight DB backup is taken before applying schema changes. Forgetting
 // to bump only skips that backup — it does NOT break the additive auto-sync.
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 export const PRAGMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -100,6 +100,41 @@ export const TABLES = {
     },
     primaryKey: "PRIMARY KEY (key, periodKey)",
     indexes: ["CREATE INDEX IF NOT EXISTS idx_aku_period ON apiKeyUsage(periodKey)"],
+  },
+  teamBudgetPolicy: {
+    columns: {
+      id: "INTEGER PRIMARY KEY CHECK (id = 1)",
+      inputTokensMonthly: "INTEGER",
+      outputTokensMonthly: "INTEGER",
+      creditsMonthly: "REAL",
+      updatedAt: "TEXT NOT NULL",
+    },
+  },
+  teamUsage: {
+    columns: {
+      periodKey: "TEXT PRIMARY KEY",
+      inputTokens: "INTEGER DEFAULT 0",
+      outputTokens: "INTEGER DEFAULT 0",
+      credits: "REAL DEFAULT 0",
+      updatedAt: "TEXT",
+    },
+  },
+  kiroAccountBudget: {
+    columns: {
+      connectionId: "TEXT PRIMARY KEY",
+      creditsMonthly: "REAL",
+      updatedAt: "TEXT NOT NULL",
+    },
+  },
+  kiroAccountUsage: {
+    columns: {
+      connectionId: "TEXT NOT NULL",
+      periodKey: "TEXT NOT NULL",
+      credits: "REAL DEFAULT 0",
+      updatedAt: "TEXT",
+    },
+    primaryKey: "PRIMARY KEY (connectionId, periodKey)",
+    indexes: ["CREATE INDEX IF NOT EXISTS idx_kau_period ON kiroAccountUsage(periodKey)"],
   },
   combos: {
     columns: {
