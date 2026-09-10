@@ -33,6 +33,8 @@ import {
   monthKey,
   upsertApiKeyUsage,
 } from "../../src/lib/db/repos/apiKeyUsageRepo.js";
+import { getKiroAccountUsage } from "../../src/lib/db/repos/kiroAccountBudgetRepo.js";
+import { getTeamUsage } from "../../src/lib/db/repos/teamBudgetRepo.js";
 import { saveRequestUsage } from "../../src/lib/db/repos/usageRepo.js";
 import { extractUsage, hasValidUsage } from "../../open-sse/utils/usageTracking.js";
 import { resolveBudgetContext } from "../../src/sse/limits/apiKeyBudget.js";
@@ -202,12 +204,13 @@ describe("Kiro credits plumbing", () => {
     expect(hasValidUsage({ kiro_credits: 2 })).toBe(true);
   });
 
-  it("accounts a completed request once even when save is retried", async () => {
-    state.db = await makeDb(["_meta", "usageHistory", "usageDaily", "apiKeyUsage"]);
+  it("accounts a completed request once across member, account, and team scopes", async () => {
+    state.db = await makeDb(["_meta", "usageHistory", "usageDaily", "apiKeyUsage", "teamUsage", "kiroAccountUsage"]);
     const entry = {
       provider: "kiro",
       model: "claude-haiku",
       apiKey: "k1",
+      connectionId: "connA",
       timestamp: "2026-09-10T12:00:00.000Z",
       tokens: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
       credits: 2,
@@ -216,25 +219,74 @@ describe("Kiro credits plumbing", () => {
     await saveRequestUsage({ ...entry, tokens: { ...entry.tokens } });
     await saveRequestUsage({ ...entry, tokens: { ...entry.tokens } });
 
-    expect(state.db.get(
-      "SELECT inputTokens, outputTokens, credits FROM apiKeyUsage WHERE key = ? AND periodKey = ?",
-      ["k1", "2026-09"]
-    )).toEqual({ inputTokens: 10, outputTokens: 5, credits: 2 });
+    await expect(getApiKeyUsage("k1", "2026-09")).resolves.toEqual({
+      key: "k1", periodKey: "2026-09", inputTokens: 10, outputTokens: 5, credits: 2,
+    });
+    await expect(getTeamUsage("2026-09")).resolves.toEqual({
+      periodKey: "2026-09", inputTokens: 10, outputTokens: 5, credits: 2,
+    });
+    await expect(getKiroAccountUsage("connA", "2026-09")).resolves.toEqual({
+      connectionId: "connA", periodKey: "2026-09", credits: 2,
+    });
   });
 
-  it("does not charge Kiro counters for non-Kiro requests", async () => {
-    state.db = await makeDb(["_meta", "usageHistory", "usageDaily", "apiKeyUsage"]);
+  it("charges keyless Kiro requests to account and team scopes only", async () => {
+    state.db = await makeDb(["_meta", "usageHistory", "usageDaily", "apiKeyUsage", "teamUsage", "kiroAccountUsage"]);
+    await saveRequestUsage({
+      provider: "kiro",
+      model: "claude-haiku",
+      connectionId: "connA",
+      timestamp: "2026-09-10T12:01:00.000Z",
+      tokens: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      credits: 2,
+    });
+
+    expect(state.db.get("SELECT * FROM apiKeyUsage")).toBeUndefined();
+    await expect(getTeamUsage("2026-09")).resolves.toMatchObject({
+      inputTokens: 10, outputTokens: 5, credits: 2,
+    });
+    await expect(getKiroAccountUsage("connA", "2026-09")).resolves.toMatchObject({
+      credits: 2,
+    });
+  });
+
+  it("charges Kiro requests without a connection to member and team scopes only", async () => {
+    state.db = await makeDb(["_meta", "usageHistory", "usageDaily", "apiKeyUsage", "teamUsage", "kiroAccountUsage"]);
+    await saveRequestUsage({
+      provider: "kiro",
+      model: "claude-haiku",
+      apiKey: "k1",
+      timestamp: "2026-09-10T12:02:00.000Z",
+      tokens: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      credits: 2,
+    });
+
+    await expect(getApiKeyUsage("k1", "2026-09")).resolves.toMatchObject({
+      inputTokens: 10, outputTokens: 5, credits: 2,
+    });
+    await expect(getTeamUsage("2026-09")).resolves.toMatchObject({
+      inputTokens: 10, outputTokens: 5, credits: 2,
+    });
+    expect(state.db.get("SELECT * FROM kiroAccountUsage")).toBeUndefined();
+  });
+
+  it("does not charge any Kiro counters for non-Kiro requests", async () => {
+    state.db = await makeDb(["_meta", "usageHistory", "usageDaily", "apiKeyUsage", "teamUsage", "kiroAccountUsage"]);
     await saveRequestUsage({
       provider: "openai",
       model: "gpt-test",
       apiKey: "k1",
+      connectionId: "connA",
       timestamp: "2026-09-10T13:00:00.000Z",
       tokens: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
       credits: 9,
     });
 
-    expect(state.db.get("SELECT * FROM apiKeyUsage WHERE key = ?", ["k1"])).toBeUndefined();
+    expect(state.db.get("SELECT * FROM apiKeyUsage")).toBeUndefined();
+    expect(state.db.get("SELECT * FROM teamUsage")).toBeUndefined();
+    expect(state.db.get("SELECT * FROM kiroAccountUsage")).toBeUndefined();
   });
+
 
   it("keeps the dashboard API key modal state declaration in source", async () => {
     const source = await (await import("node:fs/promises")).readFile(
