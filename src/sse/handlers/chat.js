@@ -24,7 +24,7 @@ import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
 import { stripModelContextMarker } from "open-sse/utils/modelMarkers.js";
-import { resolveBudgetContext } from "../limits/apiKeyBudget.js";
+import { resolveBudgetContext, resolveAccountOutputCap, clampOutputTokens } from "../limits/kiroBudget.js";
 
 /**
  * Handle chat completion request
@@ -221,44 +221,14 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
 
   const { provider, model } = modelInfo;
 
-  if (apiKey) {
-    const budget = await resolveBudgetContext({ apiKey, provider, model, body });
+  let budget = null;
+  if (provider === "kiro") {
+    budget = await resolveBudgetContext({ apiKey, provider, model, body });
     if (budget?.reject) {
-      log.warn("LIMIT", `API key blocked: insufficient_quota (${provider}/${model})`);
+      log.warn("LIMIT", `Kiro budget blocked: insufficient_quota (${provider}/${model})`);
       return budget.reject;
     }
-    if (budget?.remainingOutputTokens != null) {
-      const cap = budget.remainingOutputTokens;
-      // Keep combo/fallback callers' body untouched; a failed Kiro attempt must
-      // not clamp a subsequent non-Kiro model.
-      const cappedBody = {
-        ...body,
-        ...(body.max_tokens != null ? { max_tokens: Math.min(body.max_tokens, cap) } : {}),
-        ...(body.max_completion_tokens != null
-          ? { max_completion_tokens: Math.min(body.max_completion_tokens, cap) }
-          : {}),
-        ...(body.max_output_tokens != null
-          ? { max_output_tokens: Math.min(body.max_output_tokens, cap) }
-          : { max_output_tokens: cap }),
-      };
-      if (Array.isArray(body.contents) || body.generationConfig) {
-        cappedBody.generationConfig = {
-          ...(body.generationConfig || {}),
-          maxOutputTokens: Math.min(Number(body.generationConfig?.maxOutputTokens ?? cap), cap),
-        };
-      }
-      if (body.request && typeof body.request === "object"
-        && (Array.isArray(body.request.contents) || body.request.generationConfig)) {
-        cappedBody.request = {
-          ...body.request,
-          generationConfig: {
-            ...(body.request.generationConfig || {}),
-            maxOutputTokens: Math.min(Number(body.request.generationConfig?.maxOutputTokens ?? cap), cap),
-          },
-        };
-      }
-      body = cappedBody;
-    }
+    if (budget?.outputCap != null) body = clampOutputTokens(body, budget.outputCap);
   }
 
   // Routing shown in the unified "▶" line (client model → provider/model)
@@ -267,7 +237,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   const userAgent = request?.headers?.get("user-agent") || "";
 
   // Try with available accounts (fallback on errors)
-  const excludeConnectionIds = new Set();
+  const excludeConnectionIds = new Set(budget?.excludeConnectionIds || []);
   let lastError = null;
   let lastStatus = null;
 
@@ -289,6 +259,15 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       log.warn("CHAT", "No more accounts available", { provider });
       return errorResponse(lastStatus || HTTP_STATUS.SERVICE_UNAVAILABLE, lastError || "All accounts unavailable");
     }
+    let attemptBody = body;
+    if (budget) {
+      const { skip, cap } = resolveAccountOutputCap(budget, credentials.connectionId);
+      if (skip) {
+        excludeConnectionIds.add(credentials.connectionId);
+        continue;
+      }
+      if (cap != null) attemptBody = clampOutputTokens(body, cap);
+    }
 
     // Account selection shown in the unified "▶" line (acc:...)
     const refreshedCredentials = await checkAndRefreshToken(provider, credentials);
@@ -307,7 +286,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     const chatSettings = await getSettings();
     const providerThinking = (chatSettings.providerThinking || {})[provider] || null;
     const result = await handleChatCore({
-      body: { ...body, model: `${provider}/${model}` },
+      body: { ...attemptBody, model: `${provider}/${model}` },
       modelInfo: { provider, model },
       credentials: refreshedCredentials,
       log,
