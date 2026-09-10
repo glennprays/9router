@@ -114,6 +114,8 @@ describe("DB SQLite layer — public API parity", () => {
     });
   });
   it("exports and imports team and Kiro account budget rows", async () => {
+    await sqliteDb.resetTeamUsage();
+    await sqliteDb.resetKiroAccountUsageByConnectionId("conn-backup");
     const { getAdapter } = await import("@/lib/db/driver.js");
     const db = await getAdapter();
 
