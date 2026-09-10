@@ -71,4 +71,10 @@ describe("extractUsageFromResponse cache surfaces", () => {
     expect(out.cached_tokens).toBe(240);
     expect(canonicalizeUsage(out).cached_tokens).toBe(240);
   });
+  it("surfaces Kiro credits from non-stream usage", () => {
+    expect(extractUsageFromResponse({
+      usage: { prompt_tokens: 12, completion_tokens: 3, kiro_credits: 1.75 },
+    }).kiro_credits).toBe(1.75);
+  });
+
 });

@@ -89,6 +89,91 @@ describe("DB SQLite layer — public API parity", () => {
     expect(await sqliteDb.getApiKeyById(k.id)).toBeNull();
   });
 
+  it("exports and imports per-key usage counters", async () => {
+    const key = await sqliteDb.createApiKey("usage-key", "machine-usage");
+    await sqliteDb.saveRequestUsage({
+      provider: "kiro",
+      model: "claude-haiku",
+      apiKey: key.key,
+      credits: 0.75,
+      timestamp: "2026-09-10T12:00:00.000Z",
+      tokens: { prompt_tokens: 11, completion_tokens: 7 },
+    });
+    const snapshotWithUsage = await sqliteDb.exportDb();
+    await sqliteDb.saveRequestUsage({
+      provider: "kiro",
+      model: "claude-haiku",
+      apiKey: key.key,
+      credits: 0.25,
+      timestamp: "2026-09-10T12:00:01.000Z",
+      tokens: { prompt_tokens: 5, completion_tokens: 3 },
+    });
+    await sqliteDb.importDb(snapshotWithUsage);
+    await expect(sqliteDb.getApiKeyUsage(key.key, "2026-09")).resolves.toMatchObject({
+      inputTokens: 11, outputTokens: 7, credits: 0.75,
+    });
+  });
+  it("exports and imports team and Kiro account budget rows", async () => {
+    await sqliteDb.resetTeamUsage();
+    await sqliteDb.resetKiroAccountUsageByConnectionId("conn-backup");
+    const { getAdapter } = await import("@/lib/db/driver.js");
+    const db = await getAdapter();
+
+    await sqliteDb.setTeamBudgetPolicy({
+      inputTokensMonthly: 1000,
+      outputTokensMonthly: 2000,
+      creditsMonthly: 3000,
+    });
+    await sqliteDb.setKiroAccountBudget("conn-backup", 4000);
+    db.transaction(() => {
+      sqliteDb.upsertTeamUsage(db, {
+        periodKey: "2026-09",
+        inputTokens: 10,
+        outputTokens: 20,
+        credits: 30,
+      });
+      sqliteDb.upsertKiroAccountUsage(db, {
+        connectionId: "conn-backup",
+        periodKey: "2026-09",
+        credits: 40,
+      });
+    });
+
+    const snapshot = await sqliteDb.exportDb();
+    expect(snapshot.teamBudgetPolicy).toHaveLength(1);
+    expect(snapshot.teamUsage).toEqual([
+      expect.objectContaining({ periodKey: "2026-09", inputTokens: 10, outputTokens: 20, credits: 30 }),
+    ]);
+    expect(snapshot.kiroAccountBudget).toEqual([
+      expect.objectContaining({ connectionId: "conn-backup", creditsMonthly: 4000 }),
+    ]);
+    expect(snapshot.kiroAccountUsage).toEqual([
+      expect.objectContaining({ connectionId: "conn-backup", periodKey: "2026-09", credits: 40 }),
+    ]);
+
+    await sqliteDb.importDb(snapshot);
+    await expect(sqliteDb.getTeamBudgetPolicy()).resolves.toMatchObject({
+      inputTokensMonthly: 1000,
+      outputTokensMonthly: 2000,
+      creditsMonthly: 3000,
+    });
+    await expect(sqliteDb.getTeamUsage("2026-09")).resolves.toMatchObject({
+      inputTokens: 10,
+      outputTokens: 20,
+      credits: 30,
+    });
+    await expect(sqliteDb.getKiroAccountBudget("conn-backup")).resolves.toBe(4000);
+    await expect(sqliteDb.getKiroAccountUsage("conn-backup", "2026-09")).resolves.toMatchObject({
+      credits: 40,
+    });
+
+    await sqliteDb.importDb({ settings: snapshot.settings });
+    expect(await sqliteDb.getTeamBudgetPolicy()).toBeNull();
+    expect(await sqliteDb.getKiroAccountBudget("conn-backup")).toBeNull();
+  });
+
+
+
   it("providerConnections: CRUD + reorder by priority", async () => {
     const c1 = await sqliteDb.createProviderConnection({ provider: "test", authType: "apikey", name: "a", apiKey: "k1" });
     const c2 = await sqliteDb.createProviderConnection({ provider: "test", authType: "apikey", name: "b", apiKey: "k2" });

@@ -3,6 +3,8 @@ import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { getMeta, setMeta } from "../helpers/metaStore.js";
 import { upsertApiKeyUsage, monthKey } from "./apiKeyUsageRepo.js";
+import { upsertTeamUsage } from "./teamBudgetRepo.js";
+import { upsertKiroAccountUsage } from "./kiroAccountBudgetRepo.js";
 
 function maskApiKey(key) {
   if (!key || typeof key !== "string") return null;
@@ -305,14 +307,15 @@ export async function saveRequestUsage(entry) {
       db.run(`INSERT INTO _meta(key, value) VALUES('totalRequestsLifetime', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, [String(next)]);
       inserted = true;
 
-      if (inserted && entry.apiKey && entry.provider === "kiro") {
-        upsertApiKeyUsage(db, {
-          key: entry.apiKey,
-          periodKey: monthKey(entry.timestamp),
-          inputTokens: promptTokens,
-          outputTokens: completionTokens,
-          credits: kiroCredits ?? 0,
-        });
+      if (inserted && entry.provider === "kiro") {
+        const period = monthKey(entry.timestamp);
+        if (entry.apiKey) {
+          upsertApiKeyUsage(db, { key: entry.apiKey, periodKey: period, inputTokens: promptTokens, outputTokens: completionTokens, credits: kiroCredits ?? 0 });
+        }
+        if (entry.connectionId) {
+          upsertKiroAccountUsage(db, { connectionId: entry.connectionId, periodKey: period, credits: kiroCredits ?? 0 });
+        }
+        upsertTeamUsage(db, { periodKey: period, inputTokens: promptTokens, outputTokens: completionTokens, credits: kiroCredits ?? 0 });
       }
     });
 

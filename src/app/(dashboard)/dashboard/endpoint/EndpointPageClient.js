@@ -26,6 +26,12 @@ export default function APIPageClient({ machineId }) {
   const [newOutputTokensMonthly, setNewOutputTokensMonthly] = useState("");
   const [newCreditsMonthly, setNewCreditsMonthly] = useState("");
   const [createdKey, setCreatedKey] = useState(null);
+  const [teamBudget, setTeamBudget] = useState(null);
+  const [kiroAccounts, setKiroAccounts] = useState([]);
+  const [teamInputTokensMonthly, setTeamInputTokensMonthly] = useState("");
+  const [teamOutputTokensMonthly, setTeamOutputTokensMonthly] = useState("");
+  const [teamCreditsMonthly, setTeamCreditsMonthly] = useState("");
+  const [accountCreditsMonthly, setAccountCreditsMonthly] = useState({});
   const [confirmState, setConfirmState] = useState(null);
 
   const [requireApiKey, setRequireApiKey] = useState(false);
@@ -278,6 +284,30 @@ export default function APIPageClient({ machineId }) {
         } catch { /* fall through to empty render */ }
       }
       setKeys(existing);
+
+      const [teamRes, accountsRes] = await Promise.all([
+        fetch("/api/team/budget"),
+        fetch("/api/kiro/accounts/budget"),
+      ]);
+      if (teamRes.ok) {
+        const data = await teamRes.json();
+        const policy = data.policy || {};
+        setTeamBudget(data);
+        setTeamInputTokensMonthly(policy.inputTokensMonthly == null ? "" : String(policy.inputTokensMonthly));
+        setTeamOutputTokensMonthly(policy.outputTokensMonthly == null ? "" : String(policy.outputTokensMonthly));
+        setTeamCreditsMonthly(policy.creditsMonthly == null ? "" : String(policy.creditsMonthly));
+      }
+      if (accountsRes.ok) {
+        const data = await accountsRes.json();
+        const accounts = data.accounts || [];
+        setKiroAccounts(accounts);
+        setAccountCreditsMonthly(Object.fromEntries(
+          accounts.map((account) => [
+            account.connectionId,
+            account.creditsMonthly == null ? "" : String(account.creditsMonthly),
+          ])
+        ));
+      }
     } catch (error) {
       console.log("Error fetching data:", error);
     } finally {
@@ -702,6 +732,89 @@ export default function APIPageClient({ machineId }) {
       console.log("Error resetting key usage:", error);
     }
   };
+  const handleSaveTeamBudget = async () => {
+    try {
+      const res = await fetch("/api/team/budget", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          inputTokensMonthly: teamInputTokensMonthly === "" ? null : Number(teamInputTokensMonthly),
+          outputTokensMonthly: teamOutputTokensMonthly === "" ? null : Number(teamOutputTokensMonthly),
+          creditsMonthly: teamCreditsMonthly === "" ? null : Number(teamCreditsMonthly),
+        }),
+      });
+      if (res.ok) await fetchData();
+    } catch (error) {
+      console.log("Error saving team budget:", error);
+    }
+  };
+
+  const handleResetTeamUsage = async () => {
+    setConfirmState({
+      title: "Reset Team Usage",
+      message: "Reset all Team Kiro usage for every period?",
+      onConfirm: async () => {
+        setConfirmState(null);
+        try {
+          const res = await fetch("/api/team/budget/reset-usage", { method: "POST" });
+          if (res.ok) await fetchData();
+        } catch (error) {
+          console.log("Error resetting team usage:", error);
+        }
+      },
+    });
+  };
+
+  const handleSaveAccountBudget = async (connectionId) => {
+    const value = accountCreditsMonthly[connectionId] ?? "";
+    try {
+      const res = await fetch(`/api/kiro/accounts/${encodeURIComponent(connectionId)}/budget`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ creditsMonthly: value === "" ? null : Number(value) }),
+      });
+      if (res.ok) await fetchData();
+    } catch (error) {
+      console.log("Error saving account budget:", error);
+    }
+  };
+
+  const handleResetAccountUsage = async (connectionId) => {
+    setConfirmState({
+      title: "Reset Account Usage",
+      message: "Reset all usage for this Kiro account?",
+      onConfirm: async () => {
+        setConfirmState(null);
+        try {
+          const res = await fetch(`/api/kiro/accounts/${encodeURIComponent(connectionId)}/reset-usage`, { method: "POST" });
+          if (res.ok) await fetchData();
+        } catch (error) {
+          console.log("Error resetting account usage:", error);
+        }
+      },
+    });
+  };
+
+  const handleRotateKey = async (id) => {
+    setConfirmState({
+      title: "Rotate API Key",
+      message: "Rotate this API key? The current key will stop working immediately.",
+      onConfirm: async () => {
+        setConfirmState(null);
+        try {
+          const res = await fetch(`/api/keys/${id}/rotate`, { method: "POST" });
+          if (res.ok) {
+            const data = await res.json();
+            setCreatedKey(data.key);
+            await fetchData();
+          }
+        } catch (error) {
+          console.log("Error rotating API key:", error);
+        }
+      },
+    });
+  };
+
 
   const maskKey = (fullKey) => {
     if (!fullKey || fullKey.length <= 10) return fullKey || "";
@@ -736,6 +849,9 @@ export default function APIPageClient({ machineId }) {
   }
 
   const currentEndpoint = baseUrl;
+  const teamPolicy = teamBudget?.policy || {};
+  const teamUsage = teamBudget?.usage || {};
+  const teamRemaining = teamBudget?.remaining || {};
 
   return (
     <div className="flex flex-col gap-8">
@@ -1097,6 +1213,14 @@ export default function APIPageClient({ machineId }) {
                   >
                     <span className="hidden sm:inline">Reset usage</span>
                   </Button>
+                  <Button
+                    variant="ghost"
+                    icon="autorenew"
+                    onClick={() => handleRotateKey(key.id)}
+                    title="Rotate key"
+                  >
+                    <span className="hidden sm:inline">Rotate</span>
+                  </Button>
                   <button
                     onClick={() => handleDeleteKey(key.id)}
                     className="p-2 hover:bg-red-500/10 rounded text-red-500 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-all"
@@ -1109,6 +1233,116 @@ export default function APIPageClient({ machineId }) {
           </div>
         )}
       </Card>
+      {/* Team Kiro Budget */}
+      <Card>
+        <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
+          <span className="material-symbols-outlined text-primary">account_balance</span>
+          Team Kiro Budget
+        </h2>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <Input
+            label="Monthly input tokens"
+            type="number"
+            min="0"
+            value={teamInputTokensMonthly}
+            onChange={(e) => setTeamInputTokensMonthly(e.target.value)}
+            placeholder="Unlimited"
+          />
+          <Input
+            label="Monthly output tokens"
+            type="number"
+            min="0"
+            value={teamOutputTokensMonthly}
+            onChange={(e) => setTeamOutputTokensMonthly(e.target.value)}
+            placeholder="Unlimited"
+          />
+          <Input
+            label="Monthly Kiro credits"
+            type="number"
+            min="0"
+            step="0.01"
+            value={teamCreditsMonthly}
+            onChange={(e) => setTeamCreditsMonthly(e.target.value)}
+            placeholder="Unlimited"
+          />
+        </div>
+        <p className="text-xs text-text-muted mt-4">
+          Monthly usage: In {teamUsage.inputTokens || 0} / {teamPolicy.inputTokensMonthly == null ? "unlimited" : teamPolicy.inputTokensMonthly}
+          {" · "}Out {teamUsage.outputTokens || 0} / {teamPolicy.outputTokensMonthly == null ? "unlimited" : teamPolicy.outputTokensMonthly}
+          {" · "}Credits {teamUsage.credits || 0} / {teamPolicy.creditsMonthly == null ? "unlimited" : teamPolicy.creditsMonthly}
+          {" · "}Remaining: In {teamRemaining.inputTokens == null ? "unlimited" : teamRemaining.inputTokens}
+          {" · "}Out {teamRemaining.outputTokens == null ? "unlimited" : teamRemaining.outputTokens}
+          {" · "}Credits {teamRemaining.credits == null ? "unlimited" : teamRemaining.credits}
+        </p>
+        <div className="flex items-center gap-2 mt-4">
+          <Button onClick={handleSaveTeamBudget} icon="save">Save</Button>
+          <Button
+            variant="ghost"
+            icon="restart_alt"
+            onClick={handleResetTeamUsage}
+            title="Reset team usage"
+          >
+            <span className="hidden sm:inline">Reset usage</span>
+          </Button>
+        </div>
+      </Card>
+
+      {/* Kiro Account Pool */}
+      <Card>
+        <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
+          <span className="material-symbols-outlined text-primary">group_work</span>
+          Kiro account pool
+        </h2>
+        {kiroAccounts.length === 0 ? (
+          <p className="text-sm text-text-muted py-6 text-center">No active Kiro accounts connected.</p>
+        ) : (
+          <div className="flex flex-col">
+            {kiroAccounts.map((account) => (
+              <div
+                key={account.connectionId}
+                className="flex flex-col gap-3 py-4 border-b border-black/[0.03] dark:border-white/[0.03] last:border-b-0"
+              >
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium truncate">{account.name}</p>
+                    <p className="text-xs text-text-muted mt-1">
+                      Usage: {account.credits || 0} / {account.creditsMonthly == null ? "unlimited" : account.creditsMonthly} credits
+                      {" · "}Remaining: {account.remaining == null ? "unlimited" : account.remaining}
+                    </p>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    icon="restart_alt"
+                    onClick={() => handleResetAccountUsage(account.connectionId)}
+                    title="Reset account usage"
+                  >
+                    <span className="hidden sm:inline">Reset usage</span>
+                  </Button>
+                </div>
+                <div className="flex items-end gap-2">
+                  <Input
+                    className="flex-1"
+                    label="Monthly Kiro credits"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={accountCreditsMonthly[account.connectionId] ?? ""}
+                    onChange={(e) => setAccountCreditsMonthly((previous) => ({
+                      ...previous,
+                      [account.connectionId]: e.target.value,
+                    }))}
+                    placeholder="Unlimited"
+                  />
+                  <Button onClick={() => handleSaveAccountBudget(account.connectionId)} icon="save">
+                    Save
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+
 
       {/* Add Key Modal */}
       <Modal

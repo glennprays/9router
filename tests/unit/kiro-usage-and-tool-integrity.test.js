@@ -331,6 +331,23 @@ describe("D: cache tokens survive the kiro -> claude translation", () => {
     });
     expect(message.usage).not.toHaveProperty("cache_creation_input_tokens");
   });
+  it("preserves Kiro credits on the streaming path", () => {
+    expect(finalUsage({
+      prompt_tokens: 90, completion_tokens: 4, kiro_credits: 1.25,
+    })).toMatchObject({
+      input_tokens: 90,
+      output_tokens: 4,
+      kiro_credits: 1.25,
+    });
+  });
+  it("preserves Kiro credits on the non-streaming path", () => {
+    const message = kiroToClaudeNonStreaming({
+      choices: [{ message: { content: "hi" } }],
+      usage: { prompt_tokens: 90, completion_tokens: 4, kiro_credits: 1.25 },
+    });
+    expect(message.usage.kiro_credits).toBe(1.25);
+  });
+
 });
 
 describe("E: the translator valid-guard is defence-in-depth", () => {

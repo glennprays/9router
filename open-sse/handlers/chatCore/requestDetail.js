@@ -24,29 +24,33 @@ export function extractRequestConfig(body, stream) {
 export function extractUsageFromResponse(responseBody) {
   if (!responseBody || typeof responseBody !== "object") return null;
 
+  const usage = responseBody.usage;
+
   // Claude format
   // Note: OpenAI Responses usage ({input_tokens, input_tokens_details:{cached_tokens}})
   // also matches this branch. Its prompt is cache-INCLUSIVE and its cache rides in
   // input_tokens_details, so emit it as cached_tokens — the convention
   // canonicalizeUsage() passes through without folding. Reading it here keeps
   // cache accounting correct for /v1/responses and codex traffic.
-  if (responseBody.usage?.input_tokens !== undefined) {
+  if (usage?.input_tokens !== undefined) {
     return {
-      prompt_tokens: responseBody.usage.input_tokens || 0,
-      completion_tokens: responseBody.usage.output_tokens || 0,
-      cached_tokens: responseBody.usage.cached_tokens ?? responseBody.usage.input_tokens_details?.cached_tokens,
-      cache_read_input_tokens: responseBody.usage.cache_read_input_tokens,
-      cache_creation_input_tokens: responseBody.usage.cache_creation_input_tokens
+      prompt_tokens: usage.input_tokens || 0,
+      completion_tokens: usage.output_tokens || 0,
+      cached_tokens: usage.cached_tokens ?? usage.input_tokens_details?.cached_tokens,
+      cache_read_input_tokens: usage.cache_read_input_tokens,
+      cache_creation_input_tokens: usage.cache_creation_input_tokens,
+      kiro_credits: usage.kiro_credits,
     };
   }
 
   // OpenAI format
-  if (responseBody.usage?.prompt_tokens !== undefined) {
+  if (usage?.prompt_tokens !== undefined) {
     return {
-      prompt_tokens: responseBody.usage.prompt_tokens || 0,
-      completion_tokens: responseBody.usage.completion_tokens || 0,
-      cached_tokens: responseBody.usage.cached_tokens ?? responseBody.usage.prompt_tokens_details?.cached_tokens,
-      reasoning_tokens: responseBody.usage.completion_tokens_details?.reasoning_tokens
+      prompt_tokens: usage.prompt_tokens || 0,
+      completion_tokens: usage.completion_tokens || 0,
+      cached_tokens: usage.cached_tokens ?? usage.prompt_tokens_details?.cached_tokens,
+      reasoning_tokens: usage.completion_tokens_details?.reasoning_tokens,
+      kiro_credits: usage.kiro_credits,
     };
   }
 
@@ -57,7 +61,7 @@ export function extractUsageFromResponse(responseBody) {
       prompt_tokens: usageMetadata.promptTokenCount || 0,
       completion_tokens: usageMetadata.candidatesTokenCount || 0,
       cached_tokens: usageMetadata.cachedContentTokenCount || 0,
-      reasoning_tokens: usageMetadata.thoughtsTokenCount || 0
+      reasoning_tokens: usageMetadata.thoughtsTokenCount || 0,
     };
   }
 

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getApiKeysWithUsage, createApiKey } from "@/lib/localDb";
 import { getConsistentMachineId } from "@/shared/utils/machineId";
+import { parseLimits } from "@/lib/http/budgetLimits.js";
 
 export const dynamic = "force-dynamic";
 
@@ -19,24 +20,20 @@ export async function GET() {
 export async function POST(request) {
   try {
     const body = await request.json();
-    const {
-      name,
-      inputTokensMonthly,
-      outputTokensMonthly,
-      creditsMonthly,
-    } = body;
+    const { name } = body;
 
     if (!name) {
       return NextResponse.json({ error: "Name is required" }, { status: 400 });
     }
 
+    const parsed = parseLimits(body);
+    if (parsed.error) {
+      return NextResponse.json({ error: parsed.error }, { status: 400 });
+    }
+
     // Always get machineId from server
     const machineId = await getConsistentMachineId();
-    const apiKey = await createApiKey(name, machineId, {
-      inputTokensMonthly,
-      outputTokensMonthly,
-      creditsMonthly,
-    });
+    const apiKey = await createApiKey(name, machineId, parsed.limits);
 
     return NextResponse.json({
       key: apiKey.key,

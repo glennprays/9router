@@ -30,7 +30,7 @@ export {
 // API keys
 export {
   getApiKeys, getApiKeyById, createApiKey, updateApiKey, deleteApiKey, validateApiKey,
-  getApiKeyPolicyByKey, getApiKeysWithUsage,
+  getApiKeyPolicyByKey, getApiKeysWithUsage, rotateApiKey,
 } from "./repos/apiKeysRepo.js";
 
 // API key usage / budgets
@@ -38,6 +38,18 @@ export {
   getApiKeyUsage, upsertApiKeyUsage, getKiroCreditRate,
   resetApiKeyUsageByKey, resetApiKeyUsageById, monthKey,
 } from "./repos/apiKeyUsageRepo.js";
+
+// Team budget
+export {
+  getTeamBudgetPolicy, setTeamBudgetPolicy, getTeamUsage, upsertTeamUsage, resetTeamUsage,
+} from "./repos/teamBudgetRepo.js";
+
+// Kiro account budgets
+export {
+  getKiroAccountBudgets, getKiroAccountBudget, setKiroAccountBudget,
+  getKiroAccountUsage, getAllKiroAccountUsage, upsertKiroAccountUsage,
+  resetKiroAccountUsageByConnectionId,
+} from "./repos/kiroAccountBudgetRepo.js";
 
 // Combos
 export {
@@ -85,6 +97,11 @@ export async function exportDb() {
     providerNodes: db.all(`SELECT * FROM providerNodes`).map((r) => ({ ...parseJson(r.data, {}), id: r.id, type: r.type, name: r.name, createdAt: r.createdAt, updatedAt: r.updatedAt })),
     proxyPools: db.all(`SELECT * FROM proxyPools`).map((r) => ({ ...parseJson(r.data, {}), id: r.id, isActive: r.isActive === 1, testStatus: r.testStatus, createdAt: r.createdAt, updatedAt: r.updatedAt })),
     apiKeys: db.all(`SELECT * FROM apiKeys`).map((r) => ({ id: r.id, key: r.key, name: r.name, machineId: r.machineId, isActive: r.isActive === 1, createdAt: r.createdAt, inputTokensMonthly: r.inputTokensMonthly, outputTokensMonthly: r.outputTokensMonthly, creditsMonthly: r.creditsMonthly })),
+    apiKeyUsage: db.all(`SELECT key, periodKey, inputTokens, outputTokens, credits, updatedAt FROM apiKeyUsage`),
+    teamBudgetPolicy: db.all(`SELECT id, inputTokensMonthly, outputTokensMonthly, creditsMonthly, updatedAt FROM teamBudgetPolicy`),
+    teamUsage: db.all(`SELECT periodKey, inputTokens, outputTokens, credits, updatedAt FROM teamUsage`),
+    kiroAccountBudget: db.all(`SELECT connectionId, creditsMonthly, updatedAt FROM kiroAccountBudget`),
+    kiroAccountUsage: db.all(`SELECT connectionId, periodKey, credits, updatedAt FROM kiroAccountUsage`),
     combos: db.all(`SELECT * FROM combos`).map((r) => ({ id: r.id, name: r.name, kind: r.kind, models: parseJson(r.models, []), createdAt: r.createdAt, updatedAt: r.updatedAt })),
     modelAliases: {},
     customModels: [],
@@ -113,6 +130,11 @@ export async function importDb(payload) {
     db.run(`DELETE FROM providerNodes`);
     db.run(`DELETE FROM proxyPools`);
     db.run(`DELETE FROM apiKeys`);
+    db.run(`DELETE FROM apiKeyUsage`);
+    db.run(`DELETE FROM teamBudgetPolicy`);
+    db.run(`DELETE FROM teamUsage`);
+    db.run(`DELETE FROM kiroAccountBudget`);
+    db.run(`DELETE FROM kiroAccountUsage`);
     db.run(`DELETE FROM combos`);
     db.run(`DELETE FROM kv WHERE scope IN ('modelAliases', 'customModels', 'mitmAlias', 'pricing')`);
 
@@ -146,6 +168,36 @@ export async function importDb(payload) {
       db.run(
         `INSERT OR REPLACE INTO apiKeys(id, key, name, machineId, isActive, createdAt, inputTokensMonthly, outputTokensMonthly, creditsMonthly) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [k.id, k.key, k.name || null, k.machineId || null, k.isActive === false ? 0 : 1, k.createdAt || new Date().toISOString(), k.inputTokensMonthly ?? null, k.outputTokensMonthly ?? null, k.creditsMonthly ?? null]
+      );
+    }
+    for (const u of payload.apiKeyUsage || []) {
+      db.run(
+        `INSERT OR REPLACE INTO apiKeyUsage(key, periodKey, inputTokens, outputTokens, credits, updatedAt) VALUES(?, ?, ?, ?, ?, ?)`,
+        [u.key, u.periodKey, u.inputTokens ?? 0, u.outputTokens ?? 0, u.credits ?? 0, u.updatedAt || new Date().toISOString()]
+      );
+    }
+    for (const p of payload.teamBudgetPolicy || []) {
+      db.run(
+        `INSERT OR REPLACE INTO teamBudgetPolicy(id, inputTokensMonthly, outputTokensMonthly, creditsMonthly, updatedAt) VALUES(?, ?, ?, ?, ?)`,
+        [p.id ?? 1, p.inputTokensMonthly ?? null, p.outputTokensMonthly ?? null, p.creditsMonthly ?? null, p.updatedAt || new Date().toISOString()]
+      );
+    }
+    for (const u of payload.teamUsage || []) {
+      db.run(
+        `INSERT OR REPLACE INTO teamUsage(periodKey, inputTokens, outputTokens, credits, updatedAt) VALUES(?, ?, ?, ?, ?)`,
+        [u.periodKey, u.inputTokens ?? 0, u.outputTokens ?? 0, u.credits ?? 0, u.updatedAt || new Date().toISOString()]
+      );
+    }
+    for (const b of payload.kiroAccountBudget || []) {
+      db.run(
+        `INSERT OR REPLACE INTO kiroAccountBudget(connectionId, creditsMonthly, updatedAt) VALUES(?, ?, ?)`,
+        [b.connectionId, b.creditsMonthly ?? null, b.updatedAt || new Date().toISOString()]
+      );
+    }
+    for (const u of payload.kiroAccountUsage || []) {
+      db.run(
+        `INSERT OR REPLACE INTO kiroAccountUsage(connectionId, periodKey, credits, updatedAt) VALUES(?, ?, ?, ?)`,
+        [u.connectionId, u.periodKey, u.credits ?? 0, u.updatedAt || new Date().toISOString()]
       );
     }
     for (const c of payload.combos || []) {
