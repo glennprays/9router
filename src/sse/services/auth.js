@@ -346,10 +346,22 @@ export function extractApiKey(request) {
     return authHeader.slice(7);
   }
 
-  // Check Anthropic x-api-key header
+  // Check Anthropic/OpenAI-compatible API key headers
   const xApiKey = request.headers.get("x-api-key");
   if (xApiKey) {
     return xApiKey;
+  }
+
+  // Gemini-compatible clients use x-goog-api-key or ?key=.
+  const googleApiKey = request.headers.get("x-goog-api-key");
+  if (googleApiKey) {
+    return googleApiKey;
+  }
+  try {
+    const queryKey = new URL(request.url).searchParams.get("key");
+    if (queryKey) return queryKey;
+  } catch {
+    // Request URL should be absolute, but extraction must remain fail-open.
   }
 
   return null;

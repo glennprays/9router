@@ -22,6 +22,9 @@ export default function APIPageClient({ machineId }) {
   const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
   const [newKeyName, setNewKeyName] = useState("");
+  const [newInputTokensMonthly, setNewInputTokensMonthly] = useState("");
+  const [newOutputTokensMonthly, setNewOutputTokensMonthly] = useState("");
+  const [newCreditsMonthly, setNewCreditsMonthly] = useState("");
   const [createdKey, setCreatedKey] = useState(null);
   const [confirmState, setConfirmState] = useState(null);
 
@@ -625,11 +628,17 @@ export default function APIPageClient({ machineId }) {
   const handleCreateKey = async () => {
     if (!newKeyName.trim()) return;
 
+    const toLimit = (value) => value === "" ? null : Number(value);
     try {
       const res = await fetch("/api/keys", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: newKeyName }),
+        body: JSON.stringify({
+          name: newKeyName,
+          inputTokensMonthly: toLimit(newInputTokensMonthly),
+          outputTokensMonthly: toLimit(newOutputTokensMonthly),
+          creditsMonthly: toLimit(newCreditsMonthly),
+        }),
       });
       const data = await res.json();
 
@@ -637,6 +646,9 @@ export default function APIPageClient({ machineId }) {
         setCreatedKey(data.key);
         await fetchData();
         setNewKeyName("");
+        setNewInputTokensMonthly("");
+        setNewOutputTokensMonthly("");
+        setNewCreditsMonthly("");
         setShowAddModal(false);
       }
     } catch (error) {
@@ -679,6 +691,15 @@ export default function APIPageClient({ machineId }) {
       }
     } catch (error) {
       console.log("Error toggling key:", error);
+    }
+  };
+
+  const handleResetKeyUsage = async (id) => {
+    try {
+      const res = await fetch(`/api/keys/${id}/reset-usage`, { method: "POST" });
+      if (res.ok) await fetchData();
+    } catch (error) {
+      console.log("Error resetting key usage:", error);
     }
   };
 
@@ -1042,6 +1063,11 @@ export default function APIPageClient({ machineId }) {
                   {key.isActive === false && (
                     <p className="text-xs text-orange-500 mt-1">Paused</p>
                   )}
+                  <p className="text-xs text-text-muted mt-1">
+                    Monthly usage: In {key.usage?.inputTokens || 0} / {key.inputTokensMonthly == null ? "unlimited" : key.inputTokensMonthly}
+                    {" · "}Out {key.usage?.outputTokens || 0} / {key.outputTokensMonthly == null ? "unlimited" : key.outputTokensMonthly}
+                    {" · "}Credits {key.usage?.credits || 0} / {key.creditsMonthly == null ? "unlimited" : key.creditsMonthly}
+                  </p>
                 </div>
                 <div className="flex items-center gap-2">
                   <Toggle
@@ -1063,6 +1089,14 @@ export default function APIPageClient({ machineId }) {
                     }}
                     title={key.isActive ? "Pause key" : "Resume key"}
                   />
+                  <Button
+                    variant="ghost"
+                    icon="restart_alt"
+                    onClick={() => handleResetKeyUsage(key.id)}
+                    title="Reset usage"
+                  >
+                    <span className="hidden sm:inline">Reset usage</span>
+                  </Button>
                   <button
                     onClick={() => handleDeleteKey(key.id)}
                     className="p-2 hover:bg-red-500/10 rounded text-red-500 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-all"
@@ -1083,6 +1117,9 @@ export default function APIPageClient({ machineId }) {
         onClose={() => {
           setShowAddModal(false);
           setNewKeyName("");
+          setNewInputTokensMonthly("");
+          setNewOutputTokensMonthly("");
+          setNewCreditsMonthly("");
         }}
       >
         <div className="flex flex-col gap-4">
@@ -1092,6 +1129,31 @@ export default function APIPageClient({ machineId }) {
             onChange={(e) => setNewKeyName(e.target.value)}
             placeholder="Production Key"
           />
+          <Input
+            label="Monthly input token limit"
+            type="number"
+            min="0"
+            value={newInputTokensMonthly}
+            onChange={(e) => setNewInputTokensMonthly(e.target.value)}
+            placeholder="Unlimited"
+          />
+          <Input
+            label="Monthly output token limit"
+            type="number"
+            min="0"
+            value={newOutputTokensMonthly}
+            onChange={(e) => setNewOutputTokensMonthly(e.target.value)}
+            placeholder="Unlimited"
+          />
+          <Input
+            label="Monthly Kiro credit limit"
+            type="number"
+            min="0"
+            step="0.01"
+            value={newCreditsMonthly}
+            onChange={(e) => setNewCreditsMonthly(e.target.value)}
+            placeholder="Unlimited"
+          />
           <div className="flex gap-2">
             <Button onClick={handleCreateKey} fullWidth disabled={!newKeyName.trim()}>
               Create
@@ -1100,6 +1162,9 @@ export default function APIPageClient({ machineId }) {
               onClick={() => {
                 setShowAddModal(false);
                 setNewKeyName("");
+                setNewInputTokensMonthly("");
+                setNewOutputTokensMonthly("");
+                setNewCreditsMonthly("");
               }}
               variant="ghost"
               fullWidth

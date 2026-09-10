@@ -30,9 +30,11 @@ function processSSEMessage(msg, state) {
   } else if (eventType === "response.completed" || eventType === "response.done") {
     state.status = "completed";
     if (parsed.response?.usage) {
-      state.usage.input_tokens = parsed.response.usage.input_tokens || 0;
-      state.usage.output_tokens = parsed.response.usage.output_tokens || 0;
-      state.usage.total_tokens = parsed.response.usage.total_tokens || 0;
+      const usage = parsed.response.usage;
+      state.usage.input_tokens = usage.input_tokens || 0;
+      state.usage.output_tokens = usage.output_tokens || 0;
+      state.usage.total_tokens = usage.total_tokens || 0;
+      if (usage.kiro_credits !== undefined) state.usage.kiro_credits = usage.kiro_credits;
     }
   } else if (eventType === "response.failed") {
     state.status = "failed";

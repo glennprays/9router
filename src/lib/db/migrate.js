@@ -108,6 +108,53 @@ function syncSchemaFromTables(adapter) {
   }
 }
 
+function localMonthKey(date = new Date()) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+}
+
+// Version 2 introduced write-side per-key counters after usageHistory already
+// existed. Seed the current local month once so an upgrade cannot reset a
+// limited key's already-recorded Kiro spend.
+function backfillApiKeyUsage(adapter) {
+  const marker = "apiKeyUsageBackfilledV2";
+  if (getMetaSync(adapter, marker, null) === "1") return;
+
+  const now = new Date();
+  const periodKey = localMonthKey(now);
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+  const rows = adapter.all(
+    `SELECT apiKey, promptTokens, completionTokens, tokens
+     FROM usageHistory
+     WHERE provider = 'kiro' AND apiKey IS NOT NULL AND timestamp >= ?`,
+    [monthStart]
+  );
+
+  adapter.transaction(() => {
+    for (const row of rows) {
+      const tokens = parseJson(row.tokens, {});
+      const credits = Number(tokens?.kiro_credits);
+      adapter.run(
+        `INSERT INTO apiKeyUsage(key, periodKey, inputTokens, outputTokens, credits, updatedAt)
+         VALUES(?, ?, ?, ?, ?, ?)
+         ON CONFLICT(key, periodKey) DO UPDATE SET
+           inputTokens = inputTokens + excluded.inputTokens,
+           outputTokens = outputTokens + excluded.outputTokens,
+           credits = credits + excluded.credits,
+           updatedAt = excluded.updatedAt`,
+        [
+          row.apiKey,
+          periodKey,
+          Number(row.promptTokens) || 0,
+          Number(row.completionTokens) || 0,
+          Number.isFinite(credits) ? credits : 0,
+          now.toISOString(),
+        ]
+      );
+    }
+    setMetaSync(adapter, marker, "1");
+  });
+}
+
 // ─── Legacy JSON import (one-time) ───────────────────────────────────────
 function importLegacyMain(adapter, data) {
   if (!data || typeof data !== "object") return;
@@ -275,6 +322,7 @@ export async function runMigrationOnce(adapter) {
         setMetaSync(adapter, "backupSchemaVersion", SCHEMA_VERSION);
         setMetaSync(adapter, "migratedAt", new Date().toISOString());
       });
+      backfillApiKeyUsage(adapter);
     } catch (err) {
       if (err instanceof MigrationAborted) {
         console.error(`[DB][migrate] aborted: ${err.message} | legacy JSON kept | backup: ${backupDir}`);
@@ -288,6 +336,7 @@ export async function runMigrationOnce(adapter) {
     console.log(`[DB][migrate] JSON → SQLite in ${Date.now() - t0}ms | legacy JSON kept at DATA_DIR | backup: ${backupDir}`);
     return;
   }
+  backfillApiKeyUsage(adapter);
 
   // Track app version for informational purposes only. App version bumps no
   // longer trigger a DB backup — only real schema changes (SCHEMA_VERSION) do.

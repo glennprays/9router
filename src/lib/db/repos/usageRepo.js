@@ -2,6 +2,7 @@ import { EventEmitter } from "events";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { getMeta, setMeta } from "../helpers/metaStore.js";
+import { upsertApiKeyUsage, monthKey } from "./apiKeyUsageRepo.js";
 
 function maskApiKey(key) {
   if (!key || typeof key !== "string") return null;
@@ -246,9 +247,10 @@ export async function saveRequestUsage(entry) {
     entry.cost = await calculateCost(entry.provider, entry.model, entry.tokens);
 
     const tokens = entry.tokens || {};
+    const kiroCredits = Number.isFinite(Number(entry.credits)) ? Number(entry.credits) : null;
+    if (kiroCredits != null) tokens.kiro_credits = kiroCredits;
     const promptTokens = tokens.prompt_tokens || tokens.input_tokens || 0;
     const completionTokens = tokens.completion_tokens || tokens.output_tokens || 0;
-
     let inserted = false;
 
     // All 3 writes (history insert, daily upsert, lifetime counter) in ONE transaction.
@@ -302,6 +304,16 @@ export async function saveRequestUsage(entry) {
       const next = (cur ? parseInt(cur.value, 10) : 0) + 1;
       db.run(`INSERT INTO _meta(key, value) VALUES('totalRequestsLifetime', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, [String(next)]);
       inserted = true;
+
+      if (inserted && entry.apiKey && entry.provider === "kiro") {
+        upsertApiKeyUsage(db, {
+          key: entry.apiKey,
+          periodKey: monthKey(entry.timestamp),
+          inputTokens: promptTokens,
+          outputTokens: completionTokens,
+          credits: kiroCredits ?? 0,
+        });
+      }
     });
 
     if (inserted) {

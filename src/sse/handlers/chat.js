@@ -24,6 +24,7 @@ import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
 import { stripModelContextMarker } from "open-sse/utils/modelMarkers.js";
+import { resolveBudgetContext } from "../limits/apiKeyBudget.js";
 
 /**
  * Handle chat completion request
@@ -219,6 +220,29 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   }
 
   const { provider, model } = modelInfo;
+
+  if (apiKey) {
+    const budget = await resolveBudgetContext({ apiKey, provider, model, body });
+    if (budget?.reject) {
+      log.warn("LIMIT", `API key blocked: insufficient_quota (${provider}/${model})`);
+      return budget.reject;
+    }
+    if (budget?.remainingOutputTokens != null) {
+      const cap = budget.remainingOutputTokens;
+      // Keep combo/fallback callers' body untouched; a failed Kiro attempt must
+      // not clamp a subsequent non-Kiro model.
+      body = {
+        ...body,
+        ...(body.max_tokens != null ? { max_tokens: Math.min(body.max_tokens, cap) } : {}),
+        ...(body.max_completion_tokens != null
+          ? { max_completion_tokens: Math.min(body.max_completion_tokens, cap) }
+          : {}),
+        ...(body.max_output_tokens != null
+          ? { max_output_tokens: Math.min(body.max_output_tokens, cap) }
+          : { max_output_tokens: cap }),
+      };
+    }
+  }
 
   // Routing shown in the unified "▶" line (client model → provider/model)
 

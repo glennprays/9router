@@ -277,7 +277,13 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
           created: jsonResponse.created_at || Math.floor(Date.now() / 1000),
           model: jsonResponse.model || model,
           choices: [{ index: 0, message, finish_reason: finishReason }],
-          usage: { prompt_tokens: inTokens, completion_tokens: outTokens, total_tokens: inTokens + outTokens, ...cacheDetails }
+          usage: {
+            prompt_tokens: inTokens,
+            completion_tokens: outTokens,
+            total_tokens: inTokens + outTokens,
+            ...(usage.kiro_credits !== undefined ? { kiro_credits: usage.kiro_credits } : {}),
+            ...cacheDetails
+          }
         };
       }
 

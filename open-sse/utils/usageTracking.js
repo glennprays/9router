@@ -131,6 +131,7 @@ export function normalizeUsage(usage) {
   assignNumber("cache_creation_input_tokens", usage?.cache_creation_input_tokens);
   assignNumber("cached_tokens", usage?.cached_tokens);
   assignNumber("reasoning_tokens", usage?.reasoning_tokens);
+  assignNumber("kiro_credits", usage?.kiro_credits);
 
   // Preserve nested details objects for OpenAI format forwarding
   if (usage?.prompt_tokens_details && typeof usage.prompt_tokens_details === "object") {
@@ -217,14 +218,15 @@ export function canonicalizeUsage(usage) {
 export function hasValidUsage(usage) {
   if (!usage || typeof usage !== "object") return false;
 
-  // Check for any known token field with value > 0
-  const tokenFields = [
+  // Check for any known token or provider-metering field with value > 0.
+  const usageFields = [
     "prompt_tokens", "completion_tokens", "total_tokens",  // OpenAI
     "input_tokens", "output_tokens",                        // Claude
-    "promptTokenCount", "candidatesTokenCount"              // Gemini
+    "promptTokenCount", "candidatesTokenCount",              // Gemini
+    "kiro_credits"                                            // Kiro metering
   ];
 
-  for (const field of tokenFields) {
+  for (const field of usageFields) {
     if (typeof usage[field] === "number" && usage[field] > 0) {
       return true;
     }
@@ -274,14 +276,16 @@ export function extractUsage(chunk) {
       prompt_tokens_details: cachedTokens ? { cached_tokens: cachedTokens } : undefined
     });
   }
-
-  // OpenAI format (also covers DeepSeek which uses prompt_cache_hit_tokens)
-  if (chunk.usage && typeof chunk.usage === "object" && chunk.usage.prompt_tokens !== undefined) {
+  // OpenAI format also covers DeepSeek and Kiro terminal usage.
+  if (chunk.usage && typeof chunk.usage === "object" &&
+      (chunk.usage.prompt_tokens !== undefined || chunk.usage.kiro_credits !== undefined)) {
     return normalizeUsage({
       prompt_tokens: chunk.usage.prompt_tokens,
       completion_tokens: chunk.usage.completion_tokens || 0,
+      total_tokens: chunk.usage.total_tokens,
       cached_tokens: chunk.usage.prompt_tokens_details?.cached_tokens || chunk.usage.prompt_cache_hit_tokens,
       reasoning_tokens: chunk.usage.completion_tokens_details?.reasoning_tokens,
+      kiro_credits: chunk.usage.kiro_credits,
       prompt_tokens_details: chunk.usage.prompt_tokens_details,
       completion_tokens_details: chunk.usage.completion_tokens_details
     });

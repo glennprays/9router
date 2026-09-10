@@ -303,6 +303,15 @@ describe("Kiro conversation canonicalizer", () => {
     expect(item.status).toBe("error");
   });
 
+  it("uses max_output_tokens for Claude-source Kiro requests", () => {
+    const output = claudeToKiroRequest(modelId, {
+      messages: [{ role: "user", content: "Hello" }],
+      max_output_tokens: 19,
+    }, true, {});
+
+    expect(output.inferenceConfig.maxTokens).toBe(19);
+  });
+
   it("repairs partial parallel results in both direct translators", () => {
     const claude = claudeToKiroRequest(modelId, {
       tools: [tool("first"), tool("second")],

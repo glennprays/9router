@@ -219,7 +219,7 @@ function extractClaudeSystemText(system) {
 export function claudeToKiroRequest(model, body, stream, credentials) {
   const messages = Array.isArray(body.messages) ? body.messages : [];
   const tools = Array.isArray(body.tools) ? body.tools : [];
-  const maxTokens = body.max_tokens || 32000;
+  const maxTokens = body.max_tokens ?? body.max_output_tokens ?? 32000;
   const temperature = body.temperature;
   const topP = body.top_p;
 

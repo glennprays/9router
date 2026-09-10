@@ -40,6 +40,35 @@ describe("openaiToKiroRequest", () => {
     });
   });
 
+  describe("output token limits", () => {
+    it("forwards max_tokens to Kiro inferenceConfig", () => {
+      const result = openaiToKiroRequest("claude-sonnet-4.6", {
+        messages: [{ role: "user", content: "Hello" }],
+        max_tokens: 17,
+      }, true, {});
+
+      expect(result.inferenceConfig.maxTokens).toBe(17);
+    });
+
+    it("uses max_completion_tokens when max_tokens is absent", () => {
+      const result = openaiToKiroRequest("claude-sonnet-4.6", {
+        messages: [{ role: "user", content: "Hello" }],
+        max_completion_tokens: 23,
+      }, true, {});
+
+      expect(result.inferenceConfig.maxTokens).toBe(23);
+    });
+
+    it("uses max_output_tokens for Responses API requests", () => {
+      const result = openaiToKiroRequest("claude-sonnet-4.6", {
+        messages: [{ role: "user", content: "Hello" }],
+        max_output_tokens: 19,
+      }, true, {});
+
+      expect(result.inferenceConfig.maxTokens).toBe(19);
+    });
+  });
+
   describe("image forwarding", () => {
     it("should forward base64 image from image_url content part", () => {
       const fakeBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";

@@ -9,6 +9,20 @@ vi.mock("@/lib/usageDb.js", () => ({
 const { FORMATS } = await import("../../open-sse/translator/formats.js");
 const { translateNonStreamingResponse } = await import("../../open-sse/handlers/chatCore/nonStreamingHandler.js");
 const { handleForcedSSEToJson } = await import("../../open-sse/handlers/chatCore/sseToJsonHandler.js");
+const { convertResponsesStreamToJson } = await import("../../open-sse/transformer/streamToJsonConverter.js");
+
+describe("Responses stream usage preservation", () => {
+  it("keeps Kiro credits from the terminal usage event", async () => {
+    const raw = [
+      "event: response.completed\ndata: {\"response\":{\"usage\":{\"input_tokens\":0,\"output_tokens\":0,\"total_tokens\":0,\"kiro_credits\":2}}}",
+      ""
+    ].join("\n\n");
+
+    const result = await convertResponsesStreamToJson(new Response(raw).body);
+
+    expect(result.usage).toMatchObject({ kiro_credits: 2 });
+  });
+});
 
 // A chat.completion body as returned by a chat-native upstream (e.g. op-ericding)
 const CHAT_TOOL_BODY = {

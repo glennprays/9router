@@ -105,8 +105,9 @@ export function saveUsageStats({ provider, model, tokens, connectionId, apiKey, 
 
   const inTokens = tokens.input_tokens ?? tokens.prompt_tokens ?? 0;
   const outTokens = tokens.output_tokens ?? tokens.completion_tokens ?? 0;
+  const kiroCredits = Number.isFinite(Number(tokens?.kiro_credits)) ? Number(tokens.kiro_credits) : undefined;
 
-  if (inTokens === 0 && outTokens === 0) return;
+  if (inTokens === 0 && outTokens === 0 && kiroCredits === undefined) return;
 
   if (!silent) {
     const time = new Date().toLocaleTimeString("en-US", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
@@ -114,7 +115,8 @@ export function saveUsageStats({ provider, model, tokens, connectionId, apiKey, 
     console.log(`${COLORS.green}[${time}] 📊 [${label}] ${provider.toUpperCase()} | in=${inTokens} | out=${outTokens}${accountSuffix}${COLORS.reset}`);
   }
 
-  // Canonicalize to one storage convention (prompt_tokens cache-inclusive) so
+  // Preserve provider-specific Kiro credits separately from token normalization.
+  // They are also allowed to be the only usage signal for a metering event.
   // cached/cache-creation tokens survive to cost calc + stats. See canonicalizeUsage.
   const normalized = canonicalizeUsage(tokens) || {
     prompt_tokens: tokens.prompt_tokens ?? tokens.input_tokens ?? 0,
@@ -128,6 +130,7 @@ export function saveUsageStats({ provider, model, tokens, connectionId, apiKey, 
     timestamp: new Date().toISOString(),
     connectionId: connectionId || undefined,
     apiKey: apiKey || undefined,
-    endpoint: endpoint || null
+    endpoint: endpoint || null,
+    credits: kiroCredits
   }).catch(() => {});
 }

@@ -47,15 +47,39 @@ describe("DB SQLite layer — public API parity", () => {
     expect(await sqliteDb.isCloudEnabled()).toBe(false);
   });
 
-  it("apiKeys: create/get/validate/delete", async () => {
-    const k = await sqliteDb.createApiKey("test-key", "machine-abc");
+  it("apiKeys: create/get/validate/delete and preserve limits", async () => {
+    const k = await sqliteDb.createApiKey("test-key", "machine-abc", {
+      inputTokensMonthly: 100,
+      outputTokensMonthly: 200,
+      creditsMonthly: 1.5,
+    });
     expect(k.id).toBeDefined();
     expect(k.key).toMatch(/^sk-/);
     expect(k.machineId).toBe("machine-abc");
     expect(k.isActive).toBe(true);
+    expect(k.inputTokensMonthly).toBe(100);
+    expect(k.outputTokensMonthly).toBe(200);
+    expect(k.creditsMonthly).toBe(1.5);
 
     const all = await sqliteDb.getApiKeys();
-    expect(all.find((x) => x.id === k.id)).toBeDefined();
+    expect(all.find((x) => x.id === k.id)).toMatchObject({
+      inputTokensMonthly: 100,
+      outputTokensMonthly: 200,
+      creditsMonthly: 1.5,
+    });
+
+    const snapshot = await sqliteDb.exportDb();
+    await sqliteDb.updateApiKey(k.id, {
+      inputTokensMonthly: null,
+      outputTokensMonthly: null,
+      creditsMonthly: null,
+    });
+    await sqliteDb.importDb(snapshot);
+    expect(await sqliteDb.getApiKeyById(k.id)).toMatchObject({
+      inputTokensMonthly: 100,
+      outputTokensMonthly: 200,
+      creditsMonthly: 1.5,
+    });
 
     expect(await sqliteDb.validateApiKey(k.key)).toBeTruthy();
     expect(await sqliteDb.validateApiKey("invalid")).toBeFalsy();
