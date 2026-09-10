@@ -20,27 +20,34 @@ export function quotaExceededResponse(message) {
   });
 }
 
+function finiteLimit(value) {
+  if (value == null) return null;
+  const number = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : NaN;
+}
+
 export async function resolveBudgetContext({ apiKey, provider, model, body }) {
   if (provider !== "kiro" || !apiKey) return null;
 
   const policy = await getApiKeyPolicyByKey(apiKey);
   if (!policy) return null;
 
-  const limited = policy.inputTokensMonthly != null
-    || policy.outputTokensMonthly != null
-    || policy.creditsMonthly != null;
+  const inputLimit = finiteLimit(policy.inputTokensMonthly);
+  const outputLimit = finiteLimit(policy.outputTokensMonthly);
+  const creditsLimit = finiteLimit(policy.creditsMonthly);
+  const limited = inputLimit !== null || outputLimit !== null || creditsLimit !== null;
   if (!limited) return null;
+  if ([inputLimit, outputLimit, creditsLimit].some((limit) => Number.isNaN(limit))) {
+    return {
+      remainingOutputTokens: null,
+      reject: quotaExceededResponse("Invalid budget configuration for this API key"),
+    };
+  }
 
   const usage = await getApiKeyUsage(apiKey, monthKey());
-  const remainingInput = policy.inputTokensMonthly == null
-    ? Infinity
-    : policy.inputTokensMonthly - usage.inputTokens;
-  const remainingOutput = policy.outputTokensMonthly == null
-    ? Infinity
-    : policy.outputTokensMonthly - usage.outputTokens;
-  const remainingCredits = policy.creditsMonthly == null
-    ? Infinity
-    : policy.creditsMonthly - usage.credits;
+  const remainingInput = inputLimit === null ? Infinity : inputLimit - usage.inputTokens;
+  const remainingOutput = outputLimit === null ? Infinity : outputLimit - usage.outputTokens;
+  const remainingCredits = creditsLimit === null ? Infinity : creditsLimit - usage.credits;
 
   if (remainingInput <= 0 || remainingOutput <= 0 || remainingCredits <= 0) {
     return {

@@ -85,6 +85,7 @@ export async function exportDb() {
     providerNodes: db.all(`SELECT * FROM providerNodes`).map((r) => ({ ...parseJson(r.data, {}), id: r.id, type: r.type, name: r.name, createdAt: r.createdAt, updatedAt: r.updatedAt })),
     proxyPools: db.all(`SELECT * FROM proxyPools`).map((r) => ({ ...parseJson(r.data, {}), id: r.id, isActive: r.isActive === 1, testStatus: r.testStatus, createdAt: r.createdAt, updatedAt: r.updatedAt })),
     apiKeys: db.all(`SELECT * FROM apiKeys`).map((r) => ({ id: r.id, key: r.key, name: r.name, machineId: r.machineId, isActive: r.isActive === 1, createdAt: r.createdAt, inputTokensMonthly: r.inputTokensMonthly, outputTokensMonthly: r.outputTokensMonthly, creditsMonthly: r.creditsMonthly })),
+    apiKeyUsage: db.all(`SELECT key, periodKey, inputTokens, outputTokens, credits, updatedAt FROM apiKeyUsage`),
     combos: db.all(`SELECT * FROM combos`).map((r) => ({ id: r.id, name: r.name, kind: r.kind, models: parseJson(r.models, []), createdAt: r.createdAt, updatedAt: r.updatedAt })),
     modelAliases: {},
     customModels: [],
@@ -113,6 +114,7 @@ export async function importDb(payload) {
     db.run(`DELETE FROM providerNodes`);
     db.run(`DELETE FROM proxyPools`);
     db.run(`DELETE FROM apiKeys`);
+    db.run(`DELETE FROM apiKeyUsage`);
     db.run(`DELETE FROM combos`);
     db.run(`DELETE FROM kv WHERE scope IN ('modelAliases', 'customModels', 'mitmAlias', 'pricing')`);
 
@@ -146,6 +148,12 @@ export async function importDb(payload) {
       db.run(
         `INSERT OR REPLACE INTO apiKeys(id, key, name, machineId, isActive, createdAt, inputTokensMonthly, outputTokensMonthly, creditsMonthly) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [k.id, k.key, k.name || null, k.machineId || null, k.isActive === false ? 0 : 1, k.createdAt || new Date().toISOString(), k.inputTokensMonthly ?? null, k.outputTokensMonthly ?? null, k.creditsMonthly ?? null]
+      );
+    }
+    for (const u of payload.apiKeyUsage || []) {
+      db.run(
+        `INSERT OR REPLACE INTO apiKeyUsage(key, periodKey, inputTokens, outputTokens, credits, updatedAt) VALUES(?, ?, ?, ?, ?, ?)`,
+        [u.key, u.periodKey, u.inputTokens ?? 0, u.outputTokens ?? 0, u.credits ?? 0, u.updatedAt || new Date().toISOString()]
       );
     }
     for (const c of payload.combos || []) {

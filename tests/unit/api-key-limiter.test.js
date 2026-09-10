@@ -34,9 +34,9 @@ import {
   upsertApiKeyUsage,
 } from "../../src/lib/db/repos/apiKeyUsageRepo.js";
 import { saveRequestUsage } from "../../src/lib/db/repos/usageRepo.js";
+import { extractUsage, hasValidUsage } from "../../open-sse/utils/usageTracking.js";
 import { resolveBudgetContext } from "../../src/sse/limits/apiKeyBudget.js";
 import { saveUsageStats } from "../../open-sse/handlers/chatCore/requestDetail.js";
-import { extractUsage, hasValidUsage } from "../../open-sse/utils/usageTracking.js";
 
 let tempDbPath;
 
@@ -143,6 +143,19 @@ describe("API key budget admission", () => {
       error: { type: "insufficient_quota", code: "insufficient_quota" },
     });
   });
+
+  it("rejects malformed stored limits instead of treating them as unlimited", async () => {
+    state.policy = {
+      inputTokensMonthly: "not-a-number",
+      outputTokensMonthly: null,
+      creditsMonthly: null,
+    };
+    const result = await resolveBudgetContext({
+      apiKey: "k1", provider: "kiro", model: "claude-haiku", body: { messages: [] },
+    });
+    expect(result.reject).toBeInstanceOf(Response);
+    expect(result.reject.status).toBe(429);
+  });
 });
 
 describe("Kiro credits plumbing", () => {
@@ -185,7 +198,6 @@ describe("Kiro credits plumbing", () => {
       kiro_credits: 2,
     });
   });
-
   it("treats credit-only usage as valid for stream finalization", () => {
     expect(hasValidUsage({ kiro_credits: 2 })).toBe(true);
   });

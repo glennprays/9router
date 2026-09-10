@@ -231,7 +231,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       const cap = budget.remainingOutputTokens;
       // Keep combo/fallback callers' body untouched; a failed Kiro attempt must
       // not clamp a subsequent non-Kiro model.
-      body = {
+      const cappedBody = {
         ...body,
         ...(body.max_tokens != null ? { max_tokens: Math.min(body.max_tokens, cap) } : {}),
         ...(body.max_completion_tokens != null
@@ -241,6 +241,23 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
           ? { max_output_tokens: Math.min(body.max_output_tokens, cap) }
           : { max_output_tokens: cap }),
       };
+      if (Array.isArray(body.contents) || body.generationConfig) {
+        cappedBody.generationConfig = {
+          ...(body.generationConfig || {}),
+          maxOutputTokens: Math.min(Number(body.generationConfig?.maxOutputTokens ?? cap), cap),
+        };
+      }
+      if (body.request && typeof body.request === "object"
+        && (Array.isArray(body.request.contents) || body.request.generationConfig)) {
+        cappedBody.request = {
+          ...body.request,
+          generationConfig: {
+            ...(body.request.generationConfig || {}),
+            maxOutputTokens: Math.min(Number(body.request.generationConfig?.maxOutputTokens ?? cap), cap),
+          },
+        };
+      }
+      body = cappedBody;
     }
   }
 

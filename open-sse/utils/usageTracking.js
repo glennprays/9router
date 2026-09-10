@@ -73,7 +73,7 @@ export function filterUsageForFormat(usage, targetFormat) {
   // Define allowed fields for each format
   const formatFields = {
     [FORMATS.CLAUDE]: [
-      'input_tokens', 'output_tokens', 
+      'input_tokens', 'output_tokens',
       'cache_read_input_tokens', 'cache_creation_input_tokens',
       'estimated'
     ],
@@ -90,7 +90,7 @@ export function filterUsageForFormat(usage, targetFormat) {
     // OpenAI format (default for OPENAI, CODEX, KIRO, etc.)
     default: [
       'prompt_tokens', 'completion_tokens', 'total_tokens',
-      'cached_tokens', 'reasoning_tokens',
+      'cached_tokens', 'reasoning_tokens', 'kiro_credits',
       'prompt_tokens_details', 'completion_tokens_details',
       'estimated'
     ]

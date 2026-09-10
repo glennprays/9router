@@ -89,6 +89,32 @@ describe("DB SQLite layer — public API parity", () => {
     expect(await sqliteDb.getApiKeyById(k.id)).toBeNull();
   });
 
+  it("exports and imports per-key usage counters", async () => {
+    const key = await sqliteDb.createApiKey("usage-key", "machine-usage");
+    await sqliteDb.saveRequestUsage({
+      provider: "kiro",
+      model: "claude-haiku",
+      apiKey: key.key,
+      credits: 0.75,
+      timestamp: "2026-09-10T12:00:00.000Z",
+      tokens: { prompt_tokens: 11, completion_tokens: 7 },
+    });
+    const snapshotWithUsage = await sqliteDb.exportDb();
+    await sqliteDb.saveRequestUsage({
+      provider: "kiro",
+      model: "claude-haiku",
+      apiKey: key.key,
+      credits: 0.25,
+      timestamp: "2026-09-10T12:00:01.000Z",
+      tokens: { prompt_tokens: 5, completion_tokens: 3 },
+    });
+    await sqliteDb.importDb(snapshotWithUsage);
+    await expect(sqliteDb.getApiKeyUsage(key.key, "2026-09")).resolves.toMatchObject({
+      inputTokens: 11, outputTokens: 7, credits: 0.75,
+    });
+  });
+
+
   it("providerConnections: CRUD + reorder by priority", async () => {
     const c1 = await sqliteDb.createProviderConnection({ provider: "test", authType: "apikey", name: "a", apiKey: "k1" });
     const c2 = await sqliteDb.createProviderConnection({ provider: "test", authType: "apikey", name: "b", apiKey: "k2" });

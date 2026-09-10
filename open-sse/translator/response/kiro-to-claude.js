@@ -84,6 +84,8 @@ export function kiroToClaudeResponse(chunk, state) {
       ?? data.usage.prompt_tokens_details?.cache_creation_tokens;
     if (typeof cacheRead === "number") state.usage.cache_read_input_tokens = cacheRead;
     if (typeof cacheCreation === "number") state.usage.cache_creation_input_tokens = cacheCreation;
+    if (typeof data.usage.kiro_credits === "number") state.usage.kiro_credits = data.usage.kiro_credits;
+
   }
 
   // First chunk → emit message_start.
@@ -263,6 +265,7 @@ export function kiroToClaudeNonStreaming(data) {
     usage: {
       input_tokens: usage.prompt_tokens || 0,
       output_tokens: usage.completion_tokens || 0,
+      ...(typeof usage.kiro_credits === "number" ? { kiro_credits: usage.kiro_credits } : {}),
       // Same cache preservation as the streaming path above.
       ...(typeof (usage.cache_read_input_tokens ?? usage.prompt_tokens_details?.cached_tokens) === "number"
         ? { cache_read_input_tokens: usage.cache_read_input_tokens ?? usage.prompt_tokens_details.cached_tokens }
