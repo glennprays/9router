@@ -7,6 +7,11 @@ const state = vi.hoisted(() => ({
   db: null,
   policy: null,
   usage: { inputTokens: 0, outputTokens: 0, credits: 0 },
+  teamPolicy: null,
+  teamUsage: { inputTokens: 0, outputTokens: 0, credits: 0 },
+  accountBudgets: new Map(),
+  accountUsage: new Map(),
+  connections: [],
   rate: 0,
   saveRequestUsage: vi.fn(),
 }));
@@ -19,6 +24,11 @@ vi.mock("@/lib/localDb", () => ({
   getApiKeyPolicyByKey: vi.fn(async () => state.policy),
   getApiKeyUsage: vi.fn(async () => ({ key: "k1", periodKey: "2026-09", ...state.usage })),
   getKiroCreditRate: vi.fn(async () => state.rate),
+  getTeamBudgetPolicy: vi.fn(async () => state.teamPolicy),
+  getTeamUsage: vi.fn(async () => ({ periodKey: "2026-09", ...state.teamUsage })),
+  getKiroAccountBudgets: vi.fn(async () => state.accountBudgets),
+  getAllKiroAccountUsage: vi.fn(async () => state.accountUsage),
+  getProviderConnections: vi.fn(async () => state.connections),
   monthKey: vi.fn(() => "2026-09"),
 }));
 
@@ -37,7 +47,11 @@ import { getKiroAccountUsage } from "../../src/lib/db/repos/kiroAccountBudgetRep
 import { getTeamUsage } from "../../src/lib/db/repos/teamBudgetRepo.js";
 import { saveRequestUsage } from "../../src/lib/db/repos/usageRepo.js";
 import { extractUsage, hasValidUsage } from "../../open-sse/utils/usageTracking.js";
-import { resolveBudgetContext } from "../../src/sse/limits/apiKeyBudget.js";
+import {
+  clampOutputTokens,
+  resolveAccountOutputCap,
+  resolveBudgetContext,
+} from "../../src/sse/limits/kiroBudget.js";
 import { saveUsageStats } from "../../open-sse/handlers/chatCore/requestDetail.js";
 
 let tempDbPath;
@@ -56,6 +70,11 @@ async function makeDb(tableNames) {
 beforeEach(() => {
   state.policy = null;
   state.usage = { inputTokens: 0, outputTokens: 0, credits: 0 };
+  state.teamPolicy = null;
+  state.teamUsage = { inputTokens: 0, outputTokens: 0, credits: 0 };
+  state.accountBudgets = new Map();
+  state.accountUsage = new Map();
+  state.connections = [];
   state.rate = 0;
   state.saveRequestUsage.mockReset();
   state.saveRequestUsage.mockResolvedValue(undefined);
@@ -157,6 +176,106 @@ describe("API key budget admission", () => {
     });
     expect(result.reject).toBeInstanceOf(Response);
     expect(result.reject.status).toBe(429);
+  });
+  it("blocks when the team credit budget is exhausted", async () => {
+    state.teamPolicy = { inputTokensMonthly: null, outputTokensMonthly: null, creditsMonthly: 10 };
+    state.teamUsage = { inputTokens: 0, outputTokens: 0, credits: 10 };
+
+    const result = await resolveBudgetContext({
+      apiKey: null, provider: "kiro", model: "claude-haiku", body: { messages: [] },
+    });
+
+    expect(result.reject).toBeInstanceOf(Response);
+    expect(result.reject.status).toBe(429);
+  });
+
+  it("intersects member and team output allowances", async () => {
+    state.policy = { inputTokensMonthly: null, outputTokensMonthly: 100, creditsMonthly: null };
+    state.usage = { inputTokens: 0, outputTokens: 0, credits: 0 };
+    state.teamPolicy = { inputTokensMonthly: null, outputTokensMonthly: 40, creditsMonthly: null };
+    state.teamUsage = { inputTokens: 0, outputTokens: 0, credits: 0 };
+
+    const result = await resolveBudgetContext({
+      apiKey: "k1", provider: "kiro", model: "claude-haiku", body: { messages: [] },
+    });
+
+    expect(result).toMatchObject({ reject: null, outputCap: 40 });
+  });
+
+  it("excludes exhausted accounts while retaining an unlimited account", async () => {
+    state.accountBudgets = new Map([["connA", 2000]]);
+    state.accountUsage = new Map([["connA", 2000]]);
+    state.connections = [{ id: "connA" }, { id: "connB" }];
+
+    const result = await resolveBudgetContext({
+      apiKey: null, provider: "kiro", model: "claude-haiku", body: { messages: [] },
+    });
+
+    expect(result).toMatchObject({ reject: null, excludeConnectionIds: ["connA"] });
+    expect(result.accountRemaining).toEqual(new Map());
+  });
+
+  it("rejects when every active account is exhausted", async () => {
+    state.accountBudgets = new Map([["connA", 2000]]);
+    state.accountUsage = new Map([["connA", 2000]]);
+    state.connections = [{ id: "connA" }];
+
+    const result = await resolveBudgetContext({
+      apiKey: null, provider: "kiro", model: "claude-haiku", body: { messages: [] },
+    });
+
+    expect(result.reject).toBeInstanceOf(Response);
+    expect(result.reject.status).toBe(429);
+  });
+
+  it("tightens or skips output for a selected account", () => {
+    const budget = {
+      outputCap: 40,
+      accountRemaining: new Map([["connA", 20]]),
+      remainingCredits: 100,
+      rate: 5,
+      inputEstimate: 0,
+    };
+    expect(resolveAccountOutputCap(budget, "connA")).toEqual({ skip: false, cap: 4 });
+
+    const tightBudget = {
+      ...budget,
+      accountRemaining: new Map([["connA", 1]]),
+      remainingCredits: 5,
+    };
+    expect(resolveAccountOutputCap(tightBudget, "connA")).toEqual({ skip: true, cap: null });
+  });
+
+  it("clamps all request field shapes without mutating the body", () => {
+    const body = {
+      max_tokens: 100,
+      max_completion_tokens: 80,
+      max_output_tokens: 70,
+      contents: [{ role: "user", parts: [{ text: "hi" }] }],
+      generationConfig: { maxOutputTokens: 90, temperature: 0.2 },
+      request: {
+        contents: [{ role: "user", parts: [{ text: "hi" }] }],
+        generationConfig: { maxOutputTokens: 60 },
+      },
+    };
+    const capped = clampOutputTokens(body, 50);
+
+    expect(capped).toEqual({
+      ...body,
+      max_tokens: 50,
+      max_completion_tokens: 50,
+      max_output_tokens: 50,
+      generationConfig: { maxOutputTokens: 50, temperature: 0.2 },
+      request: {
+        ...body.request,
+        generationConfig: { maxOutputTokens: 50 },
+      },
+    });
+    expect(capped).not.toBe(body);
+    expect(capped.generationConfig).not.toBe(body.generationConfig);
+    expect(capped.request).not.toBe(body.request);
+    expect(body.max_tokens).toBe(100);
+    expect(clampOutputTokens(body, null)).toBe(body);
   });
 });
 
