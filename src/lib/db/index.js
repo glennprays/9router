@@ -30,7 +30,7 @@ export {
 // API keys
 export {
   getApiKeys, getApiKeyById, createApiKey, updateApiKey, deleteApiKey, validateApiKey,
-  getApiKeyPolicyByKey, getApiKeysWithUsage,
+  getApiKeyPolicyByKey, getApiKeysWithUsage, rotateApiKey,
 } from "./repos/apiKeysRepo.js";
 
 // API key usage / budgets

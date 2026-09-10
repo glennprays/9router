@@ -11,7 +11,7 @@ export {
   getProxyPools, getProxyPoolById,
   createProxyPool, updateProxyPool, deleteProxyPool,
   getApiKeys, getApiKeyById, createApiKey, updateApiKey, deleteApiKey, validateApiKey,
-  getApiKeyPolicyByKey, getApiKeysWithUsage,
+  getApiKeyPolicyByKey, getApiKeysWithUsage, rotateApiKey,
   getApiKeyUsage, upsertApiKeyUsage, getKiroCreditRate,
   resetApiKeyUsageByKey, resetApiKeyUsageById, monthKey,
   getTeamBudgetPolicy, setTeamBudgetPolicy, getTeamUsage, resetTeamUsage,

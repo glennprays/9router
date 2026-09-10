@@ -119,3 +119,17 @@ export async function getApiKeysWithUsage() {
     };
   });
 }
+export async function rotateApiKey(id) {
+  const db = await getAdapter();
+  const { generateApiKeyWithMachine } = await import("@/shared/utils/apiKey");
+  let result = null;
+  db.transaction(() => {
+    const row = db.get(`SELECT id, key, machineId FROM apiKeys WHERE id = ?`, [id]);
+    if (!row) return;
+    const { key: newKey } = generateApiKeyWithMachine(row.machineId);
+    db.run(`UPDATE apiKeys SET key = ? WHERE id = ?`, [newKey, id]);
+    db.run(`UPDATE apiKeyUsage SET key = ? WHERE key = ?`, [newKey, row.key]);
+    result = { id, key: newKey };
+  });
+  return result;
+}
