@@ -24,7 +24,7 @@ import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
 import { stripModelContextMarker } from "open-sse/utils/modelMarkers.js";
-import { resolveBudgetContext, resolveAccountOutputCap, clampOutputTokens } from "../limits/kiroBudget.js";
+import { resolveBudgetContext, resolveAccountOutputCap, clampOutputTokens, quotaExceededResponse } from "../limits/kiroBudget.js";
 
 /**
  * Handle chat completion request
@@ -239,6 +239,8 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
   // Try with available accounts (fallback on errors)
   const excludeConnectionIds = new Set(budget?.excludeConnectionIds || []);
   let lastError = null;
+  let skippedByBudget = false;
+  let attemptedAccount = false;
   let lastStatus = null;
 
   while (true) {
@@ -252,6 +254,10 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         log.warn("CHAT", `[${provider}/${model}] ${errorMsg} (${credentials.retryAfterHuman})`);
         return unavailableResponse(status, `[${provider}/${model}] ${errorMsg}`, credentials.retryAfter, credentials.retryAfterHuman);
       }
+      if (skippedByBudget && !attemptedAccount) {
+        log.warn("CHAT", "No Kiro accounts can fit request within budget");
+        return quotaExceededResponse("All Kiro accounts cannot fit request within credit budget");
+      }
       if (excludeConnectionIds.size === 0) {
         log.warn("AUTH", `No active credentials for provider: ${provider}`);
         return errorResponse(HTTP_STATUS.NOT_FOUND, `No active credentials for provider: ${provider}`);
@@ -263,10 +269,14 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     if (budget) {
       const { skip, cap } = resolveAccountOutputCap(budget, credentials.connectionId);
       if (skip) {
+        skippedByBudget = true;
         excludeConnectionIds.add(credentials.connectionId);
         continue;
       }
+      attemptedAccount = true;
       if (cap != null) attemptBody = clampOutputTokens(body, cap);
+    } else {
+      attemptedAccount = true;
     }
 
     // Account selection shown in the unified "▶" line (acc:...)
