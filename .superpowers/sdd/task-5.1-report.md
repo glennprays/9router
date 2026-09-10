@@ -24,5 +24,8 @@
 2. GREEN: created the shared module and migrated both routes.
 3. Focused verification: `npx vitest run unit/budget-limits.test.js` — 1 file passed, 12 tests passed.
 4. Re-ran the same focused command after whitespace cleanup — 1 file passed, 12 tests passed.
+5. Reviewer confirmed implementation correctness and found no Critical or Important issues. Added coverage for numeric-string zero, empty input, and later-field errors; the focused command then passed with 15 tests.
+
+`git diff --check 35323a8c 0a28cbda` completed cleanly before the additional test-coverage commit.
 
 No formatter, linter, project-wide suite, or unrelated files were run or changed.

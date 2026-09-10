@@ -35,6 +35,22 @@ describe("parseLimits", () => {
     })).toEqual({ limits: { inputTokensMonthly: 0, creditsMonthly: null } });
   });
 
+  it("coerces a numeric-string zero", () => {
+    expect(parseLimits({ creditsMonthly: "0" })).toEqual({
+      limits: { creditsMonthly: 0 },
+    });
+  });
+
+  it("returns empty limits when no fields are provided", () => {
+    expect(parseLimits({})).toEqual({ limits: {} });
+  });
+
+  it("reports an error from a later field after valid fields", () => {
+    expect(parseLimits({ inputTokensMonthly: 5, creditsMonthly: -1 })).toEqual({
+      error: "creditsMonthly must be a non-negative number",
+    });
+  });
+
   it("supports custom fields and returns the first error", () => {
     expect(parseLimits({ first: "bad", second: -1 }, ["first", "second"])).toEqual({
       error: "first must be a non-negative number",
