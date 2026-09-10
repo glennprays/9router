@@ -78,11 +78,13 @@ export async function resolveBudgetContext({ apiKey, provider, model, body }) {
   const teamCredits = finiteLimit(teamPolicy?.creditsMonthly);
   const memberLimited = memberInput !== null || memberOutput !== null || memberCredits !== null;
   const teamLimited = teamInput !== null || teamOutput !== null || teamCredits !== null;
-  const anyAccountCeiling = [...accountBudgets.values()].some((value) => finiteLimit(value) !== null);
+  const accountLimitValues = [...accountBudgets.values()].map((value) => finiteLimit(value));
+  const anyAccountCeiling = accountLimitValues.some((limit) => limit !== null);
 
   if (!memberLimited && !teamLimited && !anyAccountCeiling) return null;
   if ([memberInput, memberOutput, memberCredits, teamInput, teamOutput, teamCredits]
-    .some((limit) => Number.isNaN(limit))) {
+    .some((limit) => Number.isNaN(limit))
+    || accountLimitValues.some((limit) => Number.isNaN(limit))) {
     return { reject: quotaExceededResponse("Invalid budget configuration") };
   }
 
@@ -118,7 +120,9 @@ export async function resolveBudgetContext({ apiKey, provider, model, body }) {
     return { reject: quotaExceededResponse("Input token budget exceeded") };
   }
 
-  const rate = Number.isFinite(remCred) ? await getKiroCreditRate(model) : 0;
+  const rate = Number.isFinite(remCred) || anyAccountCeiling
+    ? await getKiroCreditRate(model)
+    : 0;
   const creditBoundedOutput = rate > 0
     ? Math.floor(remCred / rate) - inputEstimate
     : Infinity;

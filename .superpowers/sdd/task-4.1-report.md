@@ -21,3 +21,15 @@ Implemented and committed as the Task 4.1 limiter change. The old `apiKeyBudget.
 ## Concerns
 
 Task 4.2 must update the chat handler import and loop integration before the new resolver is reachable in the request path. No formatters, linters, or project-wide suites were run.
+
+## Review Fixes
+
+- Account-only finite ceilings now load `getKiroCreditRate(model)`, allowing `resolveAccountOutputCap` to tighten each selected account's output allowance even when aggregate/member credit remaining is unlimited.
+- Account budget values are validated with the same `finiteLimit` fail-closed behavior as member/team policy values; malformed stored ceilings return an explicit `429 Invalid budget configuration` response instead of producing `NaN` remaining credit.
+- Added regression tests for account-only known-rate tightening and malformed account ceiling rejection.
+
+## Review-Fix TDD / Verification
+
+- RED: `npx vitest run unit/api-key-limiter.test.js` — **1 test file, 24 tests, 2 failed**. The new malformed-account test received `null` instead of a `Response`; the account-only test received `rate: 0` instead of `rate: 5`.
+- GREEN: `npx vitest run unit/api-key-limiter.test.js` — **1 test file, 24 tests passed**.
+- Rationale: the resolver now distinguishes configured account ceilings from unlimited aggregate credit dimensions for rate lookup, and validates every stored account ceiling before admission/eligibility calculations.

@@ -177,6 +177,39 @@ describe("API key budget admission", () => {
     expect(result.reject).toBeInstanceOf(Response);
     expect(result.reject.status).toBe(429);
   });
+  it("rejects malformed stored account limits instead of treating them as unlimited", async () => {
+    state.accountBudgets = new Map([["connA", "not-a-number"]]);
+    state.connections = [{ id: "connA" }];
+
+    const result = await resolveBudgetContext({
+      apiKey: null, provider: "kiro", model: "claude-haiku", body: { messages: [] },
+    });
+
+    expect(result.reject).toBeInstanceOf(Response);
+    expect(result.reject.status).toBe(429);
+    await expect(result.reject.json()).resolves.toMatchObject({
+      error: { message: "Invalid budget configuration" },
+    });
+  });
+
+  it("uses the known rate to tighten output for account-only ceilings", async () => {
+    state.accountBudgets = new Map([["connA", 2000]]);
+    state.accountUsage = new Map([["connA", 1900]]);
+    state.connections = [{ id: "connA" }];
+    state.rate = 5;
+
+    const result = await resolveBudgetContext({
+      apiKey: null, provider: "kiro", model: "claude-haiku", body: { messages: [] },
+    });
+
+    expect(result).toMatchObject({ reject: null, outputCap: null, rate: 5 });
+
+    expect(resolveAccountOutputCap(result, "connA")).toEqual({
+      skip: false,
+      cap: Math.floor(100 / 5) - result.inputEstimate,
+    });
+  });
+
   it("blocks when the team credit budget is exhausted", async () => {
     state.teamPolicy = { inputTokensMonthly: null, outputTokensMonthly: null, creditsMonthly: 10 };
     state.teamUsage = { inputTokens: 0, outputTokens: 0, credits: 10 };
