@@ -8,6 +8,7 @@
 - **Providers & Models**: align CodeBuddy-CN catalog/capabilities with server config; add GPT-5.6 Sol, Terra, Luna image aliases on Codex (#3806); refresh Qoder catalog with capability mapping and image pass-through
 - **CLI tools**: replace Copilot MITM with VS Code extension setup guide
 - **Gemini**: persist and replay `thoughtSignature` scoped by session namespace
+- **Kiro**: add team-wide and per-account monthly credit budgets with usage enforcement and dashboard controls; support API-key rotation
 
 ## Fixes
 - **Claude**: normalize adaptive auto effort (`output_config.effort`) (#3792)
