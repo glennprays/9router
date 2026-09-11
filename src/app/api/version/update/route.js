@@ -1,21 +1,44 @@
 import { NextResponse } from "next/server";
 import { killAppProcesses, spawnUpdaterAndExit } from "@/lib/appUpdater";
+import { getUpdateSource } from "@/lib/updater/updateMode.js";
 
-export async function POST() {
-  if (process.env.NODE_ENV !== "production") {
+export async function startUpdateForMode({ env = process.env, startNpmUpdate }) {
+  const source = getUpdateSource(env);
+  if (source === "external") {
     return NextResponse.json(
-      { success: false, message: "Update is only available in production build (9router CLI)" },
-      { status: 403 }
+      { success: false, message: "Updates are managed externally." },
+      { status: 409 }
     );
   }
+  if (source === "invalid") {
+    return NextResponse.json(
+      { success: false, message: "Invalid UPDATE_SOURCE configuration." },
+      { status: 500 }
+    );
+  }
+  return startNpmUpdate();
+}
 
-  try {
-    // Kill sibling processes (cloudflared, MITM, stray next-server) to release file locks on Windows
-    await killAppProcesses();
-  } catch { /* best effort */ }
+export async function POST() {
+  return startUpdateForMode({
+    env: process.env,
+    startNpmUpdate: async () => {
+      if (process.env.NODE_ENV !== "production") {
+        return NextResponse.json(
+          { success: false, message: "Update is only available in production build (9router CLI)" },
+          { status: 403 }
+        );
+      }
 
-  // Schedule detached updater then exit current server process
-  spawnUpdaterAndExit();
+      try {
+        // Kill sibling processes (cloudflared, MITM, stray next-server) to release file locks on Windows
+        await killAppProcesses();
+      } catch { /* best effort */ }
 
-  return NextResponse.json({ success: true, message: "Updater started. This app will exit shortly." });
+      // Schedule detached updater then exit current server process
+      spawnUpdaterAndExit();
+
+      return NextResponse.json({ success: true, message: "Updater started. This app will exit shortly." });
+    },
+  });
 }

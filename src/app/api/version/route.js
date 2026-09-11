@@ -1,5 +1,9 @@
 import https from "https";
 import pkg from "../../../../package.json" with { type: "json" };
+import {
+  buildExternalVersionResponse,
+  getUpdateSource,
+} from "@/lib/updater/updateMode.js";
 
 const NPM_PACKAGE_NAME = "9router";
 const VERSION_CACHE_TTL_MS = 3600000; // cache npm latest lookup for 1h
@@ -52,10 +56,41 @@ async function getLatestVersionCached() {
   return latest;
 }
 
-export async function GET() {
-  const latestVersion = await getLatestVersionCached();
-  const currentVersion = pkg.version;
-  const hasUpdate = latestVersion ? compareVersions(latestVersion, currentVersion) > 0 : false;
+export async function buildVersionResponse({
+  env = process.env,
+  packageVersion = pkg.version,
+  fetchLatest = getLatestVersionCached,
+}) {
+  const source = getUpdateSource(env);
+  if (source === "external") {
+    return buildExternalVersionResponse(packageVersion);
+  }
+  if (source === "invalid") {
+    return {
+      updateSource: "invalid",
+      currentVersion: packageVersion,
+      latestVersion: null,
+      hasUpdate: false,
+    };
+  }
 
-  return Response.json({ currentVersion, latestVersion, hasUpdate });
+  const latestVersion = await fetchLatest();
+  const hasUpdate = latestVersion ? compareVersions(latestVersion, packageVersion) > 0 : false;
+  return { currentVersion: packageVersion, latestVersion, hasUpdate };
+}
+
+export async function GET() {
+  const source = getUpdateSource();
+  if (source === "invalid") {
+    return Response.json(
+      { success: false, message: "Invalid UPDATE_SOURCE configuration." },
+      { status: 500 }
+    );
+  }
+
+  return Response.json(await buildVersionResponse({
+    env: process.env,
+    packageVersion: pkg.version,
+    fetchLatest: getLatestVersionCached,
+  }));
 }
