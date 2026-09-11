@@ -524,8 +524,28 @@ $ cd tests && npx vitest run unit/external-update-mode.test.js unit/github-deplo
    Duration  355ms (transform 181ms, setup 0ms, import 278ms, tests 53ms, environment 0ms)
 ```
 
-The final correction sets `/var/lib/9router/db` to `root:9router` mode `0770` while retaining root-owned deployment, update, runtime, and backup boundaries and `0700` runtime/backup directories. Rollback database mutation remains gated by successful stop plus confirmed `inactive`/`failed` state. Update rollback restores `current` whenever the previous release is validated, preserves a promoted candidate without renaming an active target, and keeps failure status/current-tag/transaction state coherent. First-install unit, enablement, current-link, and newly-created database cleanup is gated on a safe stop so a failed stop remains retryable.
+The final correction sets `/var/lib/9router/db` to `9router:9router` mode `0770` while retaining root-owned deployment, update, runtime, and backup boundaries and `0700` runtime/backup directories. Rollback database mutation remains gated by successful stop plus confirmed `inactive`/`failed` state. Update rollback restores `current` whenever the previous release is validated, preserves a promoted candidate without renaming an active target, and keeps failure status/current-tag/transaction state coherent. First-install unit, enablement, current-link, and newly-created database cleanup is gated on a safe stop so a failed stop remains retryable.
 
 ## Linux-only deferrals
 
 No real Linux lifecycle was run. Deferred checks require a disposable Linux VPS: account/group and root/systemd transitions; exact-tag GitHub fetch/build and service-unit installation; stop failure and `ActiveState` injection; runuser ownership; no-follow database backup/restore; atomic current-link rollback; failed-candidate preservation on failed stop; first-install cleanup/retry paths; retention failure rollback; and service health verification.
+## EXIT-trap and rollback hardening rerun
+
+The permitted rerun was limited to the requested commands:
+
+```text
+$ bash -n deploy/github-deploy.sh
+(no output; exit 0)
+
+$ cd tests && npx vitest run unit/external-update-mode.test.js unit/github-deploy-script.test.js
+ RUN  v4.1.11 /Users/glennpray/projects/9router/tests
+
+ Test Files  2 passed (2)
+      Tests  21 passed (21)
+   Start at 15:40:48
+   Duration 366ms (transform 191ms, setup 0ms, import 292ms, tests 62ms)
+```
+
+This run covers the guarded EXIT rollback call and confirms the cleanup sequence remains source-asserted after it: failed-release preservation, failure-log/status writing, and lock release. It also covers atomic `current.new` plus `mv -Tf` rollback restoration without removing `current`, direct-child managed-target validation, locale-independent database `stat %F`, and the two closed runbook fences. The reports now state the observed database directory owner/group `9router:9router`, matching the deployment script.
+
+Deferred: no real Linux/systemd lifecycle, rollback failure injection, VPS filesystem-atomicity exercise, locale-specific `stat` execution, or database restore was run. No formatter, linter, project-wide suite, real lifecycle, or other command was run.

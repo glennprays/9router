@@ -193,7 +193,7 @@ validate_regular_database() {
   [[ ! -L "$DATABASE_FILE" ]] || return 1
   if [[ -e "$DATABASE_FILE" ]]; then
     [[ -f "$DATABASE_FILE" ]] || return 1
-    [[ "$("$STAT_BIN" -c '%F' "$DATABASE_FILE")" == "regular file" ]] || return 1
+    [[ "$(LC_ALL=C "$STAT_BIN" -c '%F' "$DATABASE_FILE")" == "regular file" ]] || return 1
   fi
 }
 
@@ -300,17 +300,12 @@ rollback_update() {
   # Repointing current does not mutate an already-running process, so restore
   # it whenever the previous target is still a validated release. This also
   # lets failed-candidate preservation rename the promoted directory safely.
-  if [[ -n "$previous_target" && -d "$previous_target" && ! -L "$previous_target" ]]; then
-    if safe_remove_symlink "$CURRENT_LINK"; then
+  if [[ -n "$previous_target" && -d "$previous_target" && ! -L "$previous_target" && "$("$DIRNAME_BIN" "$previous_target")" == "$RELEASES_DIR" ]]; then
+    if "$LN_BIN" -s -- "$previous_target" "$CURRENT_NEW_LINK" &&
+      "$MV_BIN" -Tf -- "$CURRENT_NEW_LINK" "$CURRENT_LINK"; then
       current_switched=0
-      current_tag=""
-      if "$LN_BIN" -s -- "$previous_target" "$CURRENT_NEW_LINK" &&
-        "$MV_BIN" -Tf -- "$CURRENT_NEW_LINK" "$CURRENT_LINK"; then
-        current_tag="$previous_tag"
-        current_restore_ok=1
-      else
-        rollback_failed=1
-      fi
+      current_tag="$previous_tag"
+      current_restore_ok=1
     else
       rollback_failed=1
     fi
@@ -383,13 +378,13 @@ rollback_first_install() {
 }
 
 on_exit() {
-  local exit_code=$? original_failure rollback_result
+  local exit_code=$? original_failure rollback_result=0 rollback_fn=""
   trap - EXIT
   if [[ "$exit_code" -ne 0 ]]; then
     original_failure="$failure_code"
     if [[ "$transaction_active" -eq 1 && "$rollback_attempted" -eq 0 ]]; then
-      if [[ "$operation" == "install" ]]; then rollback_first_install; else rollback_update; fi
-      rollback_result=$?
+      if [[ "$operation" == "install" ]]; then rollback_fn=rollback_first_install; else rollback_fn=rollback_update; fi
+      "$rollback_fn" || rollback_result=$?
       failure_code="$original_failure"
       [[ "$rollback_result" -eq 0 ]] || failure_code="rollback-failed"
     fi

@@ -150,6 +150,7 @@ for attempt in $(seq 1 30); do
   [ "$attempt" -eq 30 ] || sleep 1
 done
 test "$health_ok" -eq 1
+```
 
 The health response must indicate `ok: true`. Also test the public HTTPS reverse-proxy URL from a client that can reach the VPS:
 
@@ -223,6 +224,7 @@ for attempt in $(seq 1 30); do
   [ "$attempt" -eq 30 ] || sleep 1
 done
 test "$health_ok" -eq 1
+```
 
 If the release changed the database schema or data format, restore the backup created before that update while the service is stopped. Use the backup corresponding to the update tag; deployment backups have names like `/var/lib/9router/backups/20260911T120000Z-v0.5.71.sqlite`.
 

@@ -199,7 +199,7 @@ The final retention guard explicitly skips every `.failed-*` directory before ap
 
 Implemented the remaining deployment corrections:
 
-- `/var/lib/9router/db` remains `root:9router` and is now mode `0770`, allowing the service account's group write access while deployment, update, runtime, and backup parent boundaries remain root-owned; runtime and backup directories remain `0700`, and database/backups retain no-follow checks.
+- `/var/lib/9router/db` remains `9router:9router` and is now mode `0770`, while deployment, update, runtime, and backup parent boundaries remain root-owned; runtime and backup directories remain `0700`, and database/backups retain no-follow checks.
 - `rollback_update` mutates the database only when `systemctl stop` succeeds and `ActiveState` is confirmed `inactive` or `failed`. A failed stop leaves database state untouched.
 - `rollback_update` restores the previous `current` symlink independently of stop success when the previous release is still a validated direct child. It does not rename a promoted release while `current` still targets it, preventing a dangling symlink; rollback failures remain reported as `rollback-failed`.
 - `rollback_first_install` removes enablement, the regular unit, `current`, and a newly-created database only after the service is safely stopped. Stop failure leaves lifecycle state intact for retry, while the promoted artifact remains available for diagnosis.
@@ -225,3 +225,23 @@ $ cd tests && npx vitest run unit/external-update-mode.test.js unit/github-deplo
 ## Linux-only deferrals
 
 No real Linux lifecycle was run. The following remain deferred to a disposable Linux VPS: root/systemd account and unit transitions; stop-command failure and `ActiveState` confirmation injection; `runuser` ownership transitions; exact-tag fetch/build; service-unit installation; no-follow database backup/restore; atomic symlink switching and rollback; failed-candidate preservation under stop failure; retention and first-install cleanup failure/retry paths; and VPS health verification.
+## EXIT-trap and rollback hardening evidence
+
+Commands run exactly:
+
+```text
+$ bash -n deploy/github-deploy.sh
+(no output; exit 0)
+
+$ cd tests && npx vitest run unit/external-update-mode.test.js unit/github-deploy-script.test.js
+ RUN  v4.1.11 /Users/glennpray/projects/9router/tests
+
+ Test Files  2 passed (2)
+      Tests  21 passed (21)
+   Start at 15:40:48
+   Duration 366ms (transform 191ms, setup 0ms, import 292ms, tests 62ms, environment 0ms)
+```
+
+The focused source assertion now proves the EXIT trap initializes `rollback_result=0`, invokes the selected rollback through an `|| rollback_result=$?` guard, and continues to failed-release preservation, failure-log/status writing, and lock release. Rollback symlink restoration now creates `current.new` and replaces `current` with `mv -Tf` without first removing `current`; the previous target remains constrained to a validated direct child of the managed releases directory. Database `stat %F` parsing is locale-pinned with `LC_ALL=C`. The runbook verification and manual rollback health loops now close before the database restore block. Reported database ownership matches the implementation: `9router:9router`.
+
+Linux/systemd lifecycle, rollback failure injection, atomic symlink behavior on the target VPS, locale behavior on the target distribution, and database restore execution remain deferred; only the requested shell syntax and focused macOS tests were run.

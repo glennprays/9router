@@ -122,9 +122,28 @@ describe("GitHub deployment script arguments", () => {
     const firstRollbackStart = scriptSource.indexOf("rollback_first_install() {");
     const firstRollback = scriptSource.slice(firstRollbackStart, scriptSource.indexOf("\n\non_exit()", firstRollbackStart));
 
-    expect(updateRollback).toContain('safe_remove_symlink "$CURRENT_LINK"');
+    expect(updateRollback).not.toContain('safe_remove_symlink "$CURRENT_LINK"');
+    expect(updateRollback).toContain('"$LN_BIN" -s -- "$previous_target" "$CURRENT_NEW_LINK"');
+    expect(updateRollback).toContain('"$MV_BIN" -Tf -- "$CURRENT_NEW_LINK" "$CURRENT_LINK"');
+    expect(updateRollback).toContain('"$DIRNAME_BIN" "$previous_target"');
+    expect(scriptSource).toContain('LC_ALL=C "$STAT_BIN" -c');
+    expect(runbookSource).toContain('test "$health_ok" -eq 1\n```\n\nThe health response');
+    expect(runbookSource).toContain('test "$health_ok" -eq 1\n```\n\nIf the release changed');
     expect(updateRollback).toContain('if [[ "$stop_ok" -eq 1 && "$database_state_known" -eq 1 ]]');
     expect(firstRollback).toMatch(/if \[\[ "\$stop_ok" -eq 1 \]\]; then[\s\S]*remove_installed_unit/);
     expect(firstRollback).toMatch(/if \[\[ "\$stop_ok" -eq 1 \]\]; then[\s\S]*safe_remove_symlink "\$CURRENT_LINK"/);
+  });
+  it("guards rollback failure and preserves EXIT cleanup", () => {
+    const exitStart = scriptSource.indexOf("on_exit() {");
+    const exitTrap = scriptSource.slice(exitStart, scriptSource.indexOf("\ntrap on_exit EXIT", exitStart));
+    const rollbackCall = exitTrap.indexOf('"$rollback_fn" || rollback_result=$?');
+
+    expect(exitStart).toBeGreaterThanOrEqual(0);
+    expect(exitTrap).toContain("rollback_result=0");
+    expect(rollbackCall).toBeGreaterThanOrEqual(0);
+    expect(exitTrap.indexOf('failure_code="$original_failure"', rollbackCall)).toBeGreaterThan(rollbackCall);
+    expect(exitTrap.indexOf("preserve_failed_release", rollbackCall)).toBeGreaterThan(rollbackCall);
+    expect(exitTrap.indexOf("write_failure_log", rollbackCall)).toBeGreaterThan(rollbackCall);
+    expect(exitTrap.indexOf("release_lock")).toBeGreaterThan(exitTrap.indexOf("write_failure_log", rollbackCall));
   });
 });
