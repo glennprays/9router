@@ -55,6 +55,7 @@ export function createSSEStream(options = {}) {
 
   let buffer = "";
   let usage = null;
+  let usageWasEstimated = false;
 
   // Per-stream decoder with stream:true to correctly handle multi-byte chars split across chunks
   const decoder = new TextDecoder("utf-8", { fatal: false });
@@ -104,6 +105,22 @@ export function createSSEStream(options = {}) {
         thinking: accumulatedThinking
       }, finalUsage, ttftAt);
     }
+  };
+  const applyTranslatedUsage = (item) => {
+    const isFinishChunk = item.type === "message_delta" || item.choices?.[0]?.finish_reason;
+    if (state?.finishReason && isFinishChunk && !hasValidUsage(item.usage) && totalContentLength > 0) {
+      const estimated = estimateUsage(body, totalContentLength, sourceFormat);
+      item.usage = filterUsageForFormat(estimated, sourceFormat); // Filter + already has buffer
+      state.usage = estimated;
+    } else if (state?.finishReason && isFinishChunk && state?.usage) {
+      // Preserve authoritative usage; only provider-marked estimates receive the context buffer.
+      const isEstimated = usageWasEstimated || state.usage.estimated === true;
+      const clientUsage = isEstimated
+        ? addBufferToUsage({ ...state.usage, estimated: true })
+        : state.usage;
+      item.usage = filterUsageForFormat(clientUsage, sourceFormat);
+    }
+    return item;
   };
 
   return new TransformStream({
@@ -209,8 +226,8 @@ export function createSSEStream(options = {}) {
                 usage = estimated;
                 injectedUsage = true;
               } else if (isFinishChunk && usage) {
-                const buffered = addBufferToUsage(usage);
-                parsed.usage = filterUsageForFormat(buffered, FORMATS.OPENAI);
+                const clientUsage = usage.estimated === true ? addBufferToUsage(usage) : usage;
+                parsed.usage = filterUsageForFormat(clientUsage, FORMATS.OPENAI);
                 output = `data: ${JSON.stringify(parsed)}\n`;
                 injectedUsage = true;
               } else if (idFixed || fieldsInjected) {
@@ -318,7 +335,10 @@ export function createSSEStream(options = {}) {
 
         // Extract usage
         const extracted = extractUsage(parsed);
-        if (extracted) state.usage = mergeUsage(state.usage, extracted); // Keep original usage for logging
+        if (extracted) {
+          state.usage = mergeUsage(state.usage, extracted); // Keep original usage for logging
+          usageWasEstimated = extracted.estimated === true;
+        }
 
         // Responses same-format passthrough: re-emit with original event framing
         if (keepsOpenAIResponsesFormat && openAIResponsesEventName) {
@@ -353,17 +373,7 @@ export function createSSEStream(options = {}) {
               continue; // Skip this empty chunk
             }
 
-            // Inject estimated usage if finish chunk has no valid usage
-            const isFinishChunk = item.type === "message_delta" || item.choices?.[0]?.finish_reason;
-            if (state.finishReason && isFinishChunk && !hasValidUsage(item.usage) && totalContentLength > 0) {
-              const estimated = estimateUsage(body, totalContentLength, sourceFormat);
-              item.usage = filterUsageForFormat(estimated, sourceFormat); // Filter + already has buffer
-              state.usage = estimated;
-            } else if (state.finishReason && isFinishChunk && state.usage) {
-              // Add buffer and filter usage for client (but keep original in state.usage for logging)
-              const buffered = addBufferToUsage(state.usage);
-              item.usage = filterUsageForFormat(buffered, sourceFormat);
-            }
+            applyTranslatedUsage(item);
 
             const output = formatSSE(item, sourceFormat);
             reqLogger?.appendConvertedChunk?.(output);
@@ -422,7 +432,10 @@ export function createSSEStream(options = {}) {
             // Same accumulation the transform loop does, so finalizeStream() can
             // log a tail chunk's tokens instead of falling back to null.
             const extracted = extractUsage(parsed);
-            if (extracted) state.usage = mergeUsage(state.usage, extracted);
+            if (extracted) {
+              state.usage = mergeUsage(state.usage, extracted);
+              usageWasEstimated = extracted.estimated === true;
+            }
 
             const translated = translateResponse(targetFormat, sourceFormat, parsed, state);
 
@@ -436,6 +449,7 @@ export function createSSEStream(options = {}) {
             if (translated?.length > 0) {
               for (const item of translated) {
                 if (item === null || item === undefined) continue;
+                applyTranslatedUsage(item);
                 const output = formatSSE(item, sourceFormat);
                 reqLogger?.appendConvertedChunk?.(output);
                 controller.enqueue(sharedEncoder.encode(output));
@@ -456,6 +470,7 @@ export function createSSEStream(options = {}) {
         if (flushed?.length > 0) {
           for (const item of flushed) {
             if (item === null || item === undefined) continue;
+            applyTranslatedUsage(item);
             const output = formatSSE(item, sourceFormat);
             reqLogger?.appendConvertedChunk?.(output);
             controller.enqueue(sharedEncoder.encode(output));
