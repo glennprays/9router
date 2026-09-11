@@ -746,6 +746,192 @@ export async function getChartData(period = "7d") {
   });
 }
 
+// Team analytics: usage grouped by member (raw apiKey), provider, model, endpoint and time bucket.
+// today/24h read the usageHistory rows; 7d/30d/60d aggregate the usageDaily day JSONs.
+export async function getTeamAnalytics(period = "7d", apiKey = null) {
+  const db = await getAdapter();
+
+  const [{ getApiKeys }, { getProviderNodes }] = await Promise.all([
+    import("./apiKeysRepo.js"),
+    import("./nodesRepo.js"),
+  ]);
+
+  const providerNodeNameMap = {};
+  try {
+    const nodes = await getProviderNodes();
+    for (const n of nodes) if (n.id && n.name) providerNodeNameMap[n.id] = n.name;
+  } catch {}
+
+  let allApiKeys = [];
+  try { allApiKeys = await getApiKeys(); } catch {}
+  const apiKeyMap = {};
+  for (const k of allApiKeys) apiKeyMap[k.key] = { name: k.name, id: k.id };
+
+  // Member identity = raw apiKey. Keyless traffic gets its own bucket so member
+  // totals stay reconcilable with provider/time totals for the same period.
+  const memberLabel = (rawKey) => (rawKey ? (apiKeyMap[rawKey]?.name || "Deleted keys") : "No API key");
+  const newVals = () => ({ requests: 0, tokens: 0, cost: 0 });
+  const addVals = (target, key, requests, tokens, cost) => {
+    const t = target[key] || (target[key] = newVals());
+    t.requests += requests;
+    t.tokens += tokens;
+    t.cost += cost;
+  };
+
+  const bucketMs = 3600000;
+  const useDaily = period !== "today" && period !== "24h";
+
+  let buckets = []; // { label, requests, tokens, cost }
+  const dailyIndex = {}; // dateKey → bucket index (daily periods)
+  let hourStartMs = 0; // first hourly bucket start (today/24h)
+  let clampHours = false; // 24h clamps the newest partial hour into the last bucket; today drops it
+
+  if (useDaily) {
+    const count = { "7d": 7, "30d": 30, "60d": 60 }[period] || 30;
+    const today = new Date();
+    const labelFn = (d) => d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    buckets = Array.from({ length: count }, (_, i) => {
+      const d = new Date(today);
+      d.setDate(d.getDate() - (count - 1 - i));
+      const dateKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      dailyIndex[dateKey] = i;
+      return { label: labelFn(d), requests: 0, tokens: 0, cost: 0 };
+    });
+  } else {
+    let start;
+    if (period === "today") {
+      const d = new Date();
+      d.setHours(0, 0, 0, 0);
+      start = d.getTime();
+    } else {
+      start = Date.now() - 24 * bucketMs;
+      clampHours = true;
+    }
+    hourStartMs = start;
+    const hourLabel = (ts) => new Date(ts).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
+    buckets = Array.from({ length: 24 }, (_, i) => ({ label: hourLabel(start + i * bucketMs), requests: 0, tokens: 0, cost: 0 }));
+  }
+
+  const memberAcc = {};
+  const providerAcc = {};
+  const modelAcc = {};
+  const endpointAcc = {};
+  const perMemberBuckets = buckets.map(({ label }) => ({ label, values: {} }));
+  const activeMembers = new Set();
+
+  if (useDaily) {
+    const dayRows = loadDaysInRange(db, { "7d": 7, "30d": 30, "60d": 60 }[period] || 30);
+    const dayMap = {};
+    for (const r of dayRows) dayMap[r.dateKey] = parseJson(r.data, {});
+
+    for (const [dateKey, day] of Object.entries(dayMap)) {
+      const bi = dailyIndex[dateKey];
+      if (bi == null || !day) continue;
+      const bucket = buckets[bi];
+      const perMember = perMemberBuckets[bi].values;
+
+      // byMember / perMemberSeries / activeMembers — always team-wide.
+      for (const ak of Object.values(day.byApiKey || {})) {
+        const requests = ak.requests || 0;
+        const tokens = (ak.promptTokens || 0) + (ak.completionTokens || 0);
+        const cost = ak.cost || 0;
+        const label = memberLabel(ak.apiKey || null);
+        addVals(memberAcc, label, requests, tokens, cost);
+        if (requests > 0) activeMembers.add(label);
+        addVals(perMember, label, requests, tokens, cost);
+      }
+
+      if (apiKey) {
+        // Scoped: only this member's entries feed timeSeries/byProvider/byModel.
+        for (const ak of Object.values(day.byApiKey || {})) {
+          if (ak.apiKey !== apiKey) continue;
+          const requests = ak.requests || 0;
+          const tokens = (ak.promptTokens || 0) + (ak.completionTokens || 0);
+          const cost = ak.cost || 0;
+          bucket.requests += requests;
+          bucket.tokens += tokens;
+          bucket.cost += cost;
+          const prov = ak.provider || "unknown";
+          const provName = providerNodeNameMap[prov] || prov;
+          addVals(providerAcc, provName, requests, tokens, cost);
+          addVals(modelAcc, `${ak.rawModel || "unknown"} (${provName})`, requests, tokens, cost);
+        }
+      } else {
+        bucket.requests += day.requests || 0;
+        bucket.tokens += (day.promptTokens || 0) + (day.completionTokens || 0);
+        bucket.cost += day.cost || 0;
+        for (const [prov, p] of Object.entries(day.byProvider || {})) {
+          const provName = providerNodeNameMap[prov] || prov;
+          addVals(providerAcc, provName, p.requests || 0, (p.promptTokens || 0) + (p.completionTokens || 0), p.cost || 0);
+        }
+        for (const [mk, m] of Object.entries(day.byModel || {})) {
+          const rawModel = m.rawModel || mk.split("|")[0];
+          const prov = m.provider || mk.split("|")[1] || "";
+          const provName = providerNodeNameMap[prov] || prov;
+          addVals(modelAcc, provName ? `${rawModel} (${provName})` : rawModel, m.requests || 0, (m.promptTokens || 0) + (m.completionTokens || 0), m.cost || 0);
+        }
+      }
+
+      for (const ep of Object.values(day.byEndpoint || {})) {
+        addVals(endpointAcc, ep.endpoint || "Unknown", ep.requests || 0, (ep.promptTokens || 0) + (ep.completionTokens || 0), ep.cost || 0);
+      }
+    }
+  } else {
+    const rows = db.all(
+      `SELECT timestamp, provider, model, connectionId, apiKey, endpoint, promptTokens, completionTokens, cost FROM usageHistory WHERE timestamp >= ?`,
+      [new Date(hourStartMs).toISOString()]
+    );
+    for (const r of rows) {
+      const ts = new Date(r.timestamp).getTime();
+      if (ts < hourStartMs) continue;
+      let bi = Math.floor((ts - hourStartMs) / bucketMs);
+      if (bi >= 24) {
+        if (!clampHours) continue;
+        bi = 23;
+      }
+      const bucket = buckets[bi];
+      const perMember = perMemberBuckets[bi].values;
+      const tokens = (r.promptTokens || 0) + (r.completionTokens || 0);
+      const cost = r.cost || 0;
+      const rawKey = r.apiKey && typeof r.apiKey === "string" ? r.apiKey : null;
+      const label = memberLabel(rawKey);
+
+      addVals(memberAcc, label, 1, tokens, cost);
+      activeMembers.add(label);
+      addVals(perMember, label, 1, tokens, cost);
+      addVals(endpointAcc, r.endpoint || "Unknown", 1, tokens, cost);
+
+      if (!apiKey || rawKey === apiKey) {
+        bucket.requests += 1;
+        bucket.tokens += tokens;
+        bucket.cost += cost;
+        const provName = providerNodeNameMap[r.provider] || r.provider || "unknown";
+        addVals(providerAcc, provName, 1, tokens, cost);
+        addVals(modelAcc, r.model ? (r.provider ? `${r.model} (${provName})` : r.model) : "unknown", 1, tokens, cost);
+      }
+    }
+  }
+
+  const totals = newVals();
+  for (const b of buckets) {
+    totals.requests += b.requests;
+    totals.tokens += b.tokens;
+    totals.cost += b.cost;
+  }
+
+  const toArr = (acc) => Object.entries(acc).map(([name, v]) => ({ name, ...v }));
+  return {
+    totals,
+    activeMembers: activeMembers.size,
+    timeSeries: buckets,
+    byMember: toArr(memberAcc),
+    byProvider: toArr(providerAcc),
+    byModel: toArr(modelAcc),
+    byEndpoint: toArr(endpointAcc),
+    perMemberSeries: { members: Object.keys(memberAcc), buckets: perMemberBuckets },
+  };
+}
+
 function formatLogDate(date = new Date()) {
   const pad = (n) => String(n).padStart(2, "0");
   return `${pad(date.getDate())}-${pad(date.getMonth() + 1)}-${date.getFullYear()} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
