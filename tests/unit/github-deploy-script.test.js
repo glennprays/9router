@@ -26,4 +26,14 @@ describe("GitHub deployment script arguments", () => {
         stderr: expect.stringContaining("require root"),
       });
   });
+  it("rejects deployment path overrides before the root guard", async () => {
+    for (const variable of ["UPDATE_ROOT", "DATA_DIR", "ENV_FILE"]) {
+      await expect(run("bash", [script, "update", "--tag", "v0.5.70"], {
+        env: { ...process.env, [variable]: "/tmp/override" },
+      })).rejects.toMatchObject({
+        code: 2,
+        stderr: expect.stringContaining("path overrides"),
+      });
+    }
+  });
 });
