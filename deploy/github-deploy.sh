@@ -8,6 +8,7 @@ readonly ENV_PATH="/etc/9router/9router.env"
 readonly SERVICE_NAME="9router.service"
 readonly SERVICE_UNIT_PATH="/etc/systemd/system/9router.service"
 readonly HEALTH_URL="http://127.0.0.1:20128/api/health"
+readonly HEALTH_TIMEOUT_MS=30000
 readonly TAG_PATTERN='^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
 
 readonly GIT_BIN="/usr/bin/git"
@@ -379,6 +380,17 @@ promote_candidate() {
   release_dir="$final_release"
   candidate_cleanup=0
 }
+monotonic_milliseconds() {
+  local uptime_seconds
+  local whole_seconds
+  local fractional_seconds
+  IFS=' ' read -r uptime_seconds _ < /proc/uptime || return 1
+  [[ "$uptime_seconds" =~ ^([0-9]+)\.([0-9]+)$ ]] || return 1
+  whole_seconds="${BASH_REMATCH[1]}"
+  fractional_seconds="${BASH_REMATCH[2]}000"
+  fractional_seconds="${fractional_seconds:0:3}"
+  printf '%s' "$((10#$whole_seconds * 1000 + 10#$fractional_seconds))"
+}
 
 health_check() {
   local health_file="$UPDATE_DIR/health.$$"
@@ -389,10 +401,12 @@ health_check() {
   local curl_timeout
   local sleep_seconds
   "$RM_BIN" -f -- "$health_file"
-  now_ms="$("$DATE_BIN" -u +%s%3N)"
-  deadline_ms=$((now_ms + 30000))
+  # /proc/uptime is monotonic, so this is a true 30-second deadline even if
+  # the wall clock changes while the service is starting.
+  now_ms="$(monotonic_milliseconds)" || return 1
+  deadline_ms=$((now_ms + HEALTH_TIMEOUT_MS))
   while :; do
-    now_ms="$("$DATE_BIN" -u +%s%3N)"
+    now_ms="$(monotonic_milliseconds)" || break
     remaining_ms=$((deadline_ms - now_ms))
     (( remaining_ms > 0 )) || break
     curl_timeout="$(printf '%d.%03d' "$((remaining_ms / 1000))" "$((remaining_ms % 1000))")"
@@ -406,7 +420,7 @@ NODE
       "$RM_BIN" -f -- "$health_file"
       return 0
     fi
-    now_ms="$("$DATE_BIN" -u +%s%3N)"
+    now_ms="$(monotonic_milliseconds)" || break
     remaining_ms=$((deadline_ms - now_ms))
     (( remaining_ms > 0 )) || break
     if (( remaining_ms < 1000 )); then

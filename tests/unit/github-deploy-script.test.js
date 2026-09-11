@@ -55,6 +55,8 @@ describe("GitHub deployment script arguments", () => {
       '"$SYSTEMCTL_BIN" show "$SERVICE_NAME" --property=LoadState --value',
     );
     expect(scriptSource).toMatch(/case "\$load_state"[\s\S]*not-found/);
+    expect(scriptSource).not.toContain('"$SYSTEMCTL_BIN" is-active');
+    expect(scriptSource).not.toContain('"$SYSTEMCTL_BIN" is-enabled');
     expect(scriptSource).toContain('fail "service-query-failed"');
   });
   it("keeps post-switch rollback armed and bounds the build environment", () => {
@@ -72,7 +74,9 @@ describe("GitHub deployment script arguments", () => {
     expect(scriptSource).toContain('"HOME=$NPM_HOME"');
     expect(scriptSource).toContain('"npm_config_cache=$NPM_CACHE"');
     expect(scriptSource).toContain('"PATH=/usr/bin:/bin"');
-    expect(scriptSource).toContain("+%s%3N");
-    expect(scriptSource).toContain('--max-time "$curl_timeout"');
+    expect(scriptSource).toContain("monotonic_milliseconds()");
+    expect(scriptSource).toContain("readonly HEALTH_TIMEOUT_MS=30000");
+    expect(scriptSource).not.toContain("SECONDS");
+    expect(scriptSource).toContain("if (( remaining_ms < 1000 ));");
   });
 });
