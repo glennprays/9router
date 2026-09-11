@@ -6,7 +6,7 @@ import { MIGRATIONS, latestVersion } from "./migrations/index.js";
 import { getMetaSync, setMetaSync } from "./helpers/metaStore.js";
 import { makeBackupDir, backupFile, backupDbLite, pruneOldBackups } from "./backup.js";
 import { getAppVersion } from "./version.js";
-import { stringifyJson } from "./helpers/jsonCol.js";
+import { stringifyJson, parseJson } from "./helpers/jsonCol.js";
 
 // Marker file: prevents re-importing legacy JSON when user wipes data.sqlite.
 const MIGRATED_MARKER = path.join(DB_DIR, ".migrated-from-json");
