@@ -1,0 +1,176 @@
+# Task 2 report: tag-pinned GitHub deployment
+
+## RED evidence
+
+Added `tests/unit/github-deploy-script.test.js` before the production script. The focused run failed because `deploy/github-deploy.sh` did not exist; the invalid-tag assertions consequently observed exit code 127 instead of the required 2.
+
+## GREEN evidence
+
+- `bash -n deploy/github-deploy.sh` passed.
+- `cd tests && npx vitest run unit/github-deploy-script.test.js` passed: 1 file, 2 tests.
+- Manual smoke check confirmed `--help` prints both install/update forms and `update --tag master` exits 2 before root/prerequisite operations.
+
+## Changed files
+
+- `deploy/github-deploy.sh`: manual root-only installer/updater with exact tag and repository validation, environment guard, staged clone/build, systemd lifecycle, SQLite backup, atomic symlink switching, health validation, rollback, retention, lock handling, and sanitized status/failure records.
+- `tests/unit/github-deploy-script.test.js`: non-root help and invalid-tag argument coverage.
+
+## Self-review
+
+- Help is handled before root and prerequisite checks.
+- Tag validation is anchored to the required release-tag expression; branch names and traversal strings are rejected with status 2.
+- Repository overrides are restricted to the required HTTPS GitHub `.git` form.
+- Git, npm, curl, systemctl, node, and readlink paths are resolved once and invoked with separate arguments; no `eval`, `sh -c`, or `bash -c` is used.
+- Candidate cleanup is limited to newly cloned candidates on clone/build failure; candidates switched into `current` are retained for service/health diagnosis and rollback.
+- Status and failure records contain fixed phase/error values, validated tags, and timestamps only; environment values and command output are not recorded.
+- Update locking is acquired with `mkdir` and released by the exit trap.
+
+## Concerns
+
+- Full install/update execution requires a Linux VPS with root, systemd, the configured service unit, and a reachable tagged GitHub repository; those paths were intentionally not exercised in the focused non-root test run.
+- The report is intentionally left outside the Task 2 implementation commit because the brief's commit scope names only the script and focused test.
+
+## Review fixes
+
+### Fixed RED evidence
+
+After adding the positive valid-tag assertion and before fixing the production script, the focused test command:
+
+```bash
+cd tests && npx vitest run unit/github-deploy-script.test.js
+```
+
+failed with `1 failed` and `2 passed`. The new `v0.5.70` case exited with status `2`, but stderr was `github-deploy: tag must be a release tag such as v0.5.70` instead of the expected root-related error, proving the Bash PCRE pattern rejected a valid tag.
+
+### Fixed GREEN evidence
+
+- Replaced the Bash-incompatible `(?:...)` tag group with the POSIX ERE `(-...)?` equivalent. `cd tests && npx vitest run unit/github-deploy-script.test.js` passed: `1 file, 3 tests`.
+- Added the `deployment_started` gate to the EXIT failure status/log path, set immediately before install/update execution. Argument-validation exits therefore leave any existing status record unchanged and do not create a failure log; failures after dispatch retain failure reporting.
+- `bash -n deploy/github-deploy.sh` passed with no output.
+
+## Final-review fixes
+
+### RED evidence
+
+Added a focused non-root assertion that `UPDATE_ROOT`, `DATA_DIR`, and `ENV_FILE` process-environment overrides are rejected before the root guard. Before the script fix:
+
+```text
+FAIL unit/github-deploy-script.test.js > GitHub deployment script arguments > rejects deployment path overrides before the root guard
+expected stderr containing "path overrides", received "github-deploy: install and update require root"
+```
+
+### GREEN evidence
+
+- `bash -n deploy/github-deploy.sh` passed.
+- `cd tests && npx vitest run unit/github-deploy-script.test.js` passed: `1 file, 4 tests`.
+- Focused tests cover help, branch/path-traversal rejection, valid-tag parsing before the root guard, and all three deployment-path override rejections.
+- No real install or update path was executed on macOS.
+
+### Implemented review fixes
+
+- Same-tag update returns unchanged after canonical current/tag validation and before staging, npm, or build work; every different tag gets a fresh unprivileged staging checkout.
+- Clone, `npm ci`, and `npm run build` run as `9router`; successful candidates are root-owned and service-account-readable before activation.
+- Deployment paths are fixed to the checked-in systemd paths; process overrides are rejected.
+- `current` is resolved with `readlink -f` and must be a direct child of `/opt/9router/releases`.
+- `/usr/bin/node` and `/usr/bin/npm` are required and used; health polling uses bounded curl/sleep time within 30 seconds.
+- Environment files reject symlinks, non-root ownership/group, non-0600 modes, duplicate targeted assignments, and mismatched effective `DATA_DIR`, `PORT`, or `UPDATE_SOURCE` values.
+- Git fetches and detached-checkouts use the exact `refs/tags/<tag>` ref rather than `--branch`.
+- The failure trap covers the complete update stop-through-start transaction and restores the previous symlink/database before restarting it, while retaining failure logs.
+- `install` rejects an existing `current` deployment or installed/enabled/active service.
+
+### Deferred Linux-only verification
+
+Root/systemd execution, `runuser` ownership transitions, exact-tag fetches against GitHub, service-unit installation, database backup/restore, atomic symlink switching, and 30-second health rollback remain unverified on this macOS host. They require a disposable Linux VPS with the checked-in systemd unit and a reachable tagged repository.
+
+## Residual blocker fixes
+
+- Kept `transaction_active=1` through retention and the successful status write; failures in either operation remain eligible for rollback and restart of the previous service.
+- Isolated both npm commands with `runuser -u 9router`, `env -i`, a 9router-owned `HOME` and npm cache, `/dev/null` global npm config, and `PATH=/usr/bin:/bin`.
+- Made install reject every service-unit filesystem entry, including dangling symlinks, and changed the systemd probe to accept only an explicit `LoadState=not-found`; query failures now fail closed.
+- Reworked health polling around a millisecond deadline, passing the exact remaining duration to curl and bounding sleeps to the remaining deadline.
+- Added deterministic focused assertions for repository validation, install/systemd guards, transaction ordering, npm environment isolation, and subsecond health timeout wiring.
+
+## Verification evidence
+
+`bash -n deploy/github-deploy.sh` produced no output and exited successfully.
+
+`cd tests && npx vitest run unit/github-deploy-script.test.js`:
+
+```text
+ RUN  v4.1.11 /Users/glennpray/projects/9router/tests
+
+ Test Files  1 passed (1)
+ Tests  7 passed (7)
+ Start at  13:59:39
+ Duration  137ms (transform 8ms, setup 0ms, import 14ms, tests 42ms, environment 0ms)
+```
+
+No real root, systemd, GitHub, service, or Linux runtime lifecycle was executed on macOS.
+
+## Deferred Linux-only checks
+
+Root/systemd execution, `systemctl show` behavior for absent/loaded/manager-failure states, `runuser` ownership transitions, npm cache and lifecycle execution as `9router`, exact-tag fetches against GitHub, service-unit installation, database backup/restore, atomic symlink switching, millisecond health timeout behavior, retention failure rollback, successful-status-write failure rollback, and 30-second health rollback remain unverified on this macOS host. They require a disposable Linux VPS with the checked-in systemd unit, a reachable tagged repository, and controlled failure injection for the rollback cases.
+
+## Re-review completion evidence
+
+The six focused re-review findings are addressed in the current implementation:
+
+1. `transaction_active` stays set across retention and the successful status write, and is cleared only after `write_status true ""` returns successfully. Failures in either operation therefore enter the EXIT rollback path and restart the previous service.
+2. Both `npm ci` and `npm run build` execute as `9router` through `env -i`, with `HOME` and npm cache paths under the 9router-owned runtime directory, isolated npm config paths, and `PATH=/usr/bin:/bin`. The systemd lifecycle continues to use `/usr/bin/node`.
+3. Install rejects both existing service-unit targets and dangling symlinks with `[[ ! -e ... && ! -L ... ]]`.
+4. Install service probing accepts only successful `systemctl show ... LoadState` output equal to `not-found`; query/manager errors and every other state fail closed.
+5. Health polling uses monotonic `/proc/uptime` milliseconds, passes the exact remaining duration to curl, and limits subsecond sleeps to the remaining deadline. `HEALTH_TIMEOUT_MS=30000` documents and enforces the 30-second maximum.
+6. Focused source guards cover systemd absence probing, dangling-unit rejection, transaction ordering, isolated npm environments, monotonic deadline wiring, and removal of the old `is-active`/`is-enabled` absence probe.
+
+Exact verification commands and results:
+
+```text
+$ bash -n deploy/github-deploy.sh
+(no output; exit 0)
+
+$ cd tests && npx vitest run unit/github-deploy-script.test.js
+ RUN  v4.1.11 /Users/glennpray/projects/9router/tests
+
+ Test Files  1 passed (1)
+      Tests  7 passed (7)
+```
+
+## Deferred Linux-only checks
+
+No real install/update lifecycle was attempted on macOS. A disposable Linux systemd VPS is still required to verify root/systemd behavior, `systemctl show` absent/loaded/manager-error states, runuser ownership and npm lifecycle execution, exact-tag GitHub fetch/build, service installation and restart, database backup/restore, atomic symlink switching, retention failure rollback, successful-status-write failure rollback, and the hard 30-second health timeout under controlled failure injection.
+
+## Final hardening rerun
+
+### GREEN/check evidence
+
+Commands run exactly as requested:
+
+```text
+$ bash -n deploy/github-deploy.sh
+(no output; exit 0)
+
+$ cd tests && npx vitest run unit/external-update-mode.test.js unit/github-deploy-script.test.js
+
+ RUN  v4.1.11 /Users/glennpray/projects/9router/tests
+
+ Test Files  2 passed (2)
+      Tests  18 passed (18)
+   Start at 15:04:07
+   Duration 368ms (transform 191ms, setup 0ms, import 286ms, tests 53ms, environment 0ms)
+```
+
+The external-mode assertion now verifies the HTTP 409 directs operators to the reviewed tag-pinned deployment script and `update --tag`.
+
+### Implemented final review fixes
+
+- Stop rollback requires both successful `systemctl stop` and a successful `systemctl show ActiveState` query returning `inactive` or `failed`; database restore/deletion is guarded by that confirmation and known safe database state.
+- Database state is captured and validated before stopping, revalidated after stopping, and restored through a root-created temporary file with ownership/mode set before atomic `mv -Tf`.
+- Managed directory ancestors are checked in order for symlinks/non-directories before account or directory mutation; deployment parents and backup storage are root-owned, while only the database directory is service-owned.
+- First-install post-switch failures are transactional: unit enablement/current/database cleanup occurs only under safe stop confirmation, and failed promoted releases are preserved as `<tag>.failed-<timestamp>-<pid>`.
+- Successful releases use stable `/opt/9router/releases/<tag>` paths; retention keeps current/previous stable tags and the current rollback backup while preserving manual backups and failed artifacts.
+- The service account uses a matching `9router` group, and the runtime unit is installed only after exact fixed-content validation.
+- Runbook health loops require HTTP success and JSON `ok === true` using `/usr/bin/node`.
+
+### Linux-only deferrals
+
+No root/systemd lifecycle was attempted on macOS. VPS verification of account/group transitions, directory ownership, exact-tag fetch/build, service-unit installation, stop-state behavior, atomic database restoration, retention failure rollback, and first-install transaction cleanup remains deferred to a disposable Linux host.

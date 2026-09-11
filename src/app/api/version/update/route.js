@@ -6,7 +6,11 @@ export async function startUpdateForMode({ env = process.env, startNpmUpdate }) 
   const source = getUpdateSource(env);
   if (source === "external") {
     return NextResponse.json(
-      { success: false, message: "Updates are managed externally." },
+      {
+        success: false,
+        message:
+          "Updates are managed externally. Download the reviewed tag-pinned deployment script from GitHub and run update --tag <tag>.",
+      },
       { status: 409 }
     );
   }

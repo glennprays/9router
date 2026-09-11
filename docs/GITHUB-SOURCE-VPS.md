@@ -142,14 +142,14 @@ sudo systemctl status 9router
 sudo journalctl -u 9router -n 100 --no-pager
 health_ok=0
 for attempt in $(seq 1 30); do
-  if curl --fail --silent http://127.0.0.1:20128/api/health; then
+  if health_json="$(curl --fail --silent http://127.0.0.1:20128/api/health)" \
+    && /usr/bin/node -e 'const value = JSON.parse(process.argv[1]); process.exit(value.ok === true ? 0 : 1);' "$health_json"; then
     health_ok=1
     break
   fi
   [ "$attempt" -eq 30 ] || sleep 1
 done
 test "$health_ok" -eq 1
-```
 
 The health response must indicate `ok: true`. Also test the public HTTPS reverse-proxy URL from a client that can reach the VPS:
 
@@ -215,14 +215,14 @@ sudo mv -Tf -- /opt/9router/current.rollback /opt/9router/current
 sudo systemctl start 9router
 health_ok=0
 for attempt in $(seq 1 30); do
-  if curl --fail --silent http://127.0.0.1:20128/api/health; then
+  if health_json="$(curl --fail --silent http://127.0.0.1:20128/api/health)" \
+    && /usr/bin/node -e 'const value = JSON.parse(process.argv[1]); process.exit(value.ok === true ? 0 : 1);' "$health_json"; then
     health_ok=1
     break
   fi
   [ "$attempt" -eq 30 ] || sleep 1
 done
 test "$health_ok" -eq 1
-```
 
 If the release changed the database schema or data format, restore the backup created before that update while the service is stopped. Use the backup corresponding to the update tag; deployment backups have names like `/var/lib/9router/backups/20260911T120000Z-v0.5.71.sqlite`.
 
@@ -236,7 +236,8 @@ sudo chmod 0600 /var/lib/9router/db/data.sqlite
 sudo systemctl start 9router
 health_ok=0
 for attempt in $(seq 1 30); do
-  if curl --fail --silent http://127.0.0.1:20128/api/health; then
+  if health_json="$(curl --fail --silent http://127.0.0.1:20128/api/health)" \
+    && /usr/bin/node -e 'const value = JSON.parse(process.argv[1]); process.exit(value.ok === true ? 0 : 1);' "$health_json"; then
     health_ok=1
     break
   fi
