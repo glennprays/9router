@@ -255,8 +255,8 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         return unavailableResponse(status, `[${provider}/${model}] ${errorMsg}`, credentials.retryAfter, credentials.retryAfterHuman);
       }
       if (skippedByBudget && !attemptedAccount) {
-        log.warn("CHAT", "No Kiro accounts can fit request within budget");
-        return quotaExceededResponse("All Kiro accounts cannot fit request within credit budget");
+        log.warn("LIMIT", `Kiro budget blocked: no account fits request (${provider}/${model})`);
+        return quotaExceededResponse("No Kiro account can fit the request within its credit budget");
       }
       if (excludeConnectionIds.size === 0) {
         log.warn("AUTH", `No active credentials for provider: ${provider}`);
@@ -273,11 +273,11 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         excludeConnectionIds.add(credentials.connectionId);
         continue;
       }
-      attemptedAccount = true;
       if (cap != null) attemptBody = clampOutputTokens(body, cap);
-    } else {
-      attemptedAccount = true;
     }
+    // Past this point an upstream attempt is made; a later "no more accounts" exit is
+    // then an upstream failure, not a budget rejection.
+    attemptedAccount = true;
 
     // Account selection shown in the unified "▶" line (acc:...)
     const refreshedCredentials = await checkAndRefreshToken(provider, credentials);
