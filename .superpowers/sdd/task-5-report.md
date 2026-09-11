@@ -504,3 +504,28 @@ The focused assertions now include setup ordering, regular-unit cleanup, confirm
 Retention explicitly excludes all `.failed-*` release directories before matching stable tags, so failed prerelease artifacts are preserved as required.
 
 Linux-only deferrals: root/systemd lifecycle and stop-state failure injection; service-account/group and runuser transitions; exact-tag GitHub fetch/build; fixed-unit installation; database backup/restore and atomic symlink switching; retention and first-install rollback failures; and VPS health verification.
+
+## Final correction evidence
+
+Commands run exactly:
+
+```text
+$ bash -n deploy/github-deploy.sh
+(no output; exit 0)
+
+$ cd tests && npx vitest run unit/external-update-mode.test.js unit/github-deploy-script.test.js
+
+ RUN  v4.1.11 /Users/glennpray/projects/9router/tests
+
+
+ Test Files  2 passed (2)
+      Tests  20 passed (20)
+   Start at  15:19:03
+   Duration  355ms (transform 181ms, setup 0ms, import 278ms, tests 53ms, environment 0ms)
+```
+
+The final correction sets `/var/lib/9router/db` to `root:9router` mode `0770` while retaining root-owned deployment, update, runtime, and backup boundaries and `0700` runtime/backup directories. Rollback database mutation remains gated by successful stop plus confirmed `inactive`/`failed` state. Update rollback restores `current` whenever the previous release is validated, preserves a promoted candidate without renaming an active target, and keeps failure status/current-tag/transaction state coherent. First-install unit, enablement, current-link, and newly-created database cleanup is gated on a safe stop so a failed stop remains retryable.
+
+## Linux-only deferrals
+
+No real Linux lifecycle was run. Deferred checks require a disposable Linux VPS: account/group and root/systemd transitions; exact-tag GitHub fetch/build and service-unit installation; stop failure and `ActiveState` injection; runuser ownership; no-follow database backup/restore; atomic current-link rollback; failed-candidate preservation on failed stop; first-install cleanup/retry paths; retention failure rollback; and service health verification.

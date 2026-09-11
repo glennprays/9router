@@ -194,4 +194,34 @@ Focused source assertions cover setup-before-database-capture ordering, regular-
 
 The final retention guard explicitly skips every `.failed-*` directory before applying the stable-tag matcher, including prerelease-tag failure names.
 
-Linux-only deferrals remain: root/systemd lifecycle, stop-state failure injection, account/group transitions, runuser ownership, exact-tag fetch/build, fixed-unit installation, no-follow database replacement, atomic symlink rollback, retention failure rollback, and first-install cleanup on a disposable Linux host.
+
+## Final correction evidence
+
+Implemented the remaining deployment corrections:
+
+- `/var/lib/9router/db` remains `root:9router` and is now mode `0770`, allowing the service account's group write access while deployment, update, runtime, and backup parent boundaries remain root-owned; runtime and backup directories remain `0700`, and database/backups retain no-follow checks.
+- `rollback_update` mutates the database only when `systemctl stop` succeeds and `ActiveState` is confirmed `inactive` or `failed`. A failed stop leaves database state untouched.
+- `rollback_update` restores the previous `current` symlink independently of stop success when the previous release is still a validated direct child. It does not rename a promoted release while `current` still targets it, preventing a dangling symlink; rollback failures remain reported as `rollback-failed`.
+- `rollback_first_install` removes enablement, the regular unit, `current`, and a newly-created database only after the service is safely stopped. Stop failure leaves lifecycle state intact for retry, while the promoted artifact remains available for diagnosis.
+- `currentTag`, `current_switched`, `release_promoted`, and `transaction_active` transitions now reflect restored, retained, or unresolved release state on both stop outcomes.
+
+Exact verification:
+
+```text
+$ bash -n deploy/github-deploy.sh
+(no output; exit 0)
+
+$ cd tests && npx vitest run unit/external-update-mode.test.js unit/github-deploy-script.test.js
+
+ RUN  v4.1.11 /Users/glennpray/projects/9router/tests
+
+
+ Test Files  2 passed (2)
+      Tests  20 passed (20)
+   Start at  15:19:03
+   Duration  355ms (transform 181ms, setup 0ms, import 278ms, tests 53ms, environment 0ms)
+```
+
+## Linux-only deferrals
+
+No real Linux lifecycle was run. The following remain deferred to a disposable Linux VPS: root/systemd account and unit transitions; stop-command failure and `ActiveState` confirmation injection; `runuser` ownership transitions; exact-tag fetch/build; service-unit installation; no-follow database backup/restore; atomic symlink switching and rollback; failed-candidate preservation under stop failure; retention and first-install cleanup failure/retry paths; and VPS health verification.

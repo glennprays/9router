@@ -96,7 +96,7 @@ describe("GitHub deployment script arguments", () => {
     expect(rollbackStop).toBeGreaterThan(rollbackStart);
     expect(rollbackDatabase).toBeGreaterThan(rollbackStop);
     expect(scriptSource).toContain('if stop_service_confirmed && [[ "$stop_confirmation_failed" -eq 0 ]]');
-    expect(scriptSource).toContain('[[ "$stop_confirmed" -eq 1 && "$stop_confirmation_failed" -eq 0');
+    expect(scriptSource).toContain('if [[ "$stop_ok" -eq 1 && "$stop_confirmed" -eq 1 && "$stop_confirmation_failed" -eq 0');
     expect(scriptSource).toContain('final_release="$RELEASES_DIR/$tag"');
     expect(scriptSource).toContain('[[ "$name" == *.failed-* ]] && continue');
     expect(scriptSource).toContain('failed_target="$RELEASES_DIR/${tag}.failed-');
@@ -106,7 +106,7 @@ describe("GitHub deployment script arguments", () => {
     expect(scriptSource).toContain("--user-group");
     expect(scriptSource).toContain('"$CHOWN_BIN" root:root "$DEPLOY_ROOT"');
     expect(scriptSource).toContain('"$CHOWN_BIN" 9router:9router "$DATABASE_DIR"');
-    expect(scriptSource).toContain('"$CHMOD_BIN" 0750 "$DATABASE_DIR"');
+    expect(scriptSource).toContain('"$CHMOD_BIN" 0770 "$DATABASE_DIR"');
     expect(scriptSource).toContain('"$CHMOD_BIN" 0700 "$RUNTIME_DIR" "$BACKUP_DIR"');
     expect(scriptSource).toContain('expected_service_unit > "$expected"');
     expect(scriptSource).toContain('"$INSTALL_BIN" -o root -g root -m 0644 "$expected"');
@@ -115,5 +115,16 @@ describe("GitHub deployment script arguments", () => {
     expect((runbookSource.match(/\/usr\/bin\/node -e/g) || [])).toHaveLength(3);
     expect(runbookSource).toContain("value.ok === true");
     expect(runbookSource).toContain("/opt/9router/releases/${GOOD_TAG}");
+  });
+  it("restores current safely and gates first-install cleanup on stop", () => {
+    const updateRollbackStart = scriptSource.indexOf("rollback_update() {");
+    const updateRollback = scriptSource.slice(updateRollbackStart, scriptSource.indexOf("rollback_first_install()", updateRollbackStart));
+    const firstRollbackStart = scriptSource.indexOf("rollback_first_install() {");
+    const firstRollback = scriptSource.slice(firstRollbackStart, scriptSource.indexOf("\n\non_exit()", firstRollbackStart));
+
+    expect(updateRollback).toContain('safe_remove_symlink "$CURRENT_LINK"');
+    expect(updateRollback).toContain('if [[ "$stop_ok" -eq 1 && "$database_state_known" -eq 1 ]]');
+    expect(firstRollback).toMatch(/if \[\[ "\$stop_ok" -eq 1 \]\]; then[\s\S]*remove_installed_unit/);
+    expect(firstRollback).toMatch(/if \[\[ "\$stop_ok" -eq 1 \]\]; then[\s\S]*safe_remove_symlink "\$CURRENT_LINK"/);
   });
 });

@@ -268,9 +268,15 @@ restore_database() {
 }
 
 preserve_failed_release() {
-  local timestamp failed_target
+  local timestamp failed_target current_target
   [[ "$release_promoted" -eq 1 && -n "$release_dir" ]] || return 0
   [[ -d "$release_dir" && ! -L "$release_dir" ]] || return 0
+  # Never rename the active target: that would leave current dangling if the
+  # rollback could not first restore the previous release.
+  if [[ -L "$CURRENT_LINK" ]]; then
+    current_target="$("$READLINK_BIN" -f -- "$CURRENT_LINK" 2>/dev/null || true)"
+    [[ "$current_target" != "$release_dir" ]] || return 0
+  fi
   timestamp="$($DATE_BIN -u +%Y%m%dT%H%M%SZ)"
   failed_target="$RELEASES_DIR/${tag}.failed-${timestamp}-$$"
   [[ ! -e "$failed_target" && ! -L "$failed_target" ]] || return 1
@@ -280,7 +286,7 @@ preserve_failed_release() {
 }
 
 rollback_update() {
-  local rollback_failed=0 stop_ok=0
+  local rollback_failed=0 stop_ok=0 current_restore_ok=0
   phase="rollback"
   rollback_attempted=1
   # Database mutation and service restart require a successful stop plus a
@@ -291,14 +297,24 @@ rollback_update() {
     rollback_failed=1
   fi
   safe_remove_symlink "$CURRENT_NEW_LINK" || rollback_failed=1
-  if [[ "$stop_ok" -eq 1 && -n "$previous_target" && -d "$previous_target" && ! -L "$previous_target" ]]; then
-    if ! "$LN_BIN" -s -- "$previous_target" "$CURRENT_NEW_LINK" || ! "$MV_BIN" -Tf -- "$CURRENT_NEW_LINK" "$CURRENT_LINK"; then
-      rollback_failed=1
-    else
+  # Repointing current does not mutate an already-running process, so restore
+  # it whenever the previous target is still a validated release. This also
+  # lets failed-candidate preservation rename the promoted directory safely.
+  if [[ -n "$previous_target" && -d "$previous_target" && ! -L "$previous_target" ]]; then
+    if safe_remove_symlink "$CURRENT_LINK"; then
       current_switched=0
-      current_tag="$previous_tag"
+      current_tag=""
+      if "$LN_BIN" -s -- "$previous_target" "$CURRENT_NEW_LINK" &&
+        "$MV_BIN" -Tf -- "$CURRENT_NEW_LINK" "$CURRENT_LINK"; then
+        current_tag="$previous_tag"
+        current_restore_ok=1
+      else
+        rollback_failed=1
+      fi
+    else
+      rollback_failed=1
     fi
-  elif [[ "$stop_ok" -eq 1 ]]; then
+  else
     rollback_failed=1
   fi
   if [[ "$stop_ok" -eq 1 && "$database_state_known" -eq 1 ]]; then
@@ -308,8 +324,9 @@ rollback_update() {
       remove_new_database || rollback_failed=1
     fi
   fi
-  # Never claim a restart when stop was not confirmed.
-  if [[ "$stop_ok" -eq 1 ]]; then
+  # Never claim a restart when stop was not confirmed or current was not
+  # restored to the previous release.
+  if [[ "$stop_ok" -eq 1 && "$current_restore_ok" -eq 1 ]]; then
     "$SYSTEMCTL_BIN" start "$SERVICE_NAME" >/dev/null 2>&1 || rollback_failed=1
   fi
   transaction_active=0
@@ -327,27 +344,43 @@ rollback_first_install() {
   else
     stop_ok=1
   fi
-  if [[ "$unit_installed" -eq 1 || "$service_enabled" -eq 1 ]]; then
-    "$SYSTEMCTL_BIN" disable "$SERVICE_NAME" >/dev/null 2>&1 || rollback_failed=1
-    remove_installed_unit || rollback_failed=1
-    "$SYSTEMCTL_BIN" daemon-reload >/dev/null 2>&1 || rollback_failed=1
+  # Unit enablement and the regular unit itself are only removed once the
+  # service is confirmed stopped. Leaving them in place on stop failure makes
+  # a retry safe and avoids mutating a running service's lifecycle.
+  if [[ "$stop_ok" -eq 1 ]]; then
+    if [[ "$service_enabled" -eq 1 ]]; then
+      if "$SYSTEMCTL_BIN" disable "$SERVICE_NAME" >/dev/null 2>&1; then
+        service_enabled=0
+      else
+        rollback_failed=1
+      fi
+    fi
+    if [[ "$unit_installed" -eq 1 && "$service_enabled" -eq 0 ]]; then
+      if remove_installed_unit; then
+        unit_installed=0
+        "$SYSTEMCTL_BIN" daemon-reload >/dev/null 2>&1 || rollback_failed=1
+      else
+        rollback_failed=1
+      fi
+    fi
+  else
+    rollback_failed=1
   fi
-  if [[ "$current_switched" -eq 1 ]]; then
-    if [[ "$stop_ok" -eq 1 ]]; then
-      safe_remove_symlink "$CURRENT_LINK" || rollback_failed=1
+  if [[ "$current_switched" -eq 1 && "$stop_ok" -eq 1 ]]; then
+    if safe_remove_symlink "$CURRENT_LINK"; then
+      current_switched=0
       current_tag=""
     else
       rollback_failed=1
     fi
   fi
-  if [[ "$stop_confirmed" -eq 1 && "$stop_confirmation_failed" -eq 0 && "$database_state_known" -eq 1 && "$database_existed_before" -eq 0 ]]; then
+  if [[ "$stop_ok" -eq 1 && "$stop_confirmed" -eq 1 && "$stop_confirmation_failed" -eq 0 && "$database_state_known" -eq 1 && "$database_existed_before" -eq 0 ]]; then
     remove_new_database || rollback_failed=1
   fi
   transaction_active=0
   if [[ "$rollback_failed" -eq 1 ]]; then failure_code="rollback-failed"; fi
   return "$rollback_failed"
 }
-
 
 on_exit() {
   local exit_code=$? original_failure rollback_result
@@ -437,7 +470,7 @@ ensure_directory_tree() {
   "$CHMOD_BIN" 0755 "$UPDATE_DIR" "$STAGING_DIR"
   "$CHMOD_BIN" 0700 "$RUNTIME_DIR" "$BACKUP_DIR"
   "$CHOWN_BIN" 9router:9router "$DATABASE_DIR"
-  "$CHMOD_BIN" 0750 "$DATABASE_DIR"
+  "$CHMOD_BIN" 0770 "$DATABASE_DIR"
 }
 
 ensure_account_and_directories() {
