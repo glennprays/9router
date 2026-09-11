@@ -98,6 +98,7 @@ describe("GitHub deployment script arguments", () => {
     expect(scriptSource).toContain('if stop_service_confirmed && [[ "$stop_confirmation_failed" -eq 0 ]]');
     expect(scriptSource).toContain('[[ "$stop_confirmed" -eq 1 && "$stop_confirmation_failed" -eq 0');
     expect(scriptSource).toContain('final_release="$RELEASES_DIR/$tag"');
+    expect(scriptSource).toContain('[[ "$name" == *.failed-* ]] && continue');
     expect(scriptSource).toContain('failed_target="$RELEASES_DIR/${tag}.failed-');
     expect(scriptSource).toContain('stop_ok=1');
     expect(scriptSource).toContain("remove_installed_unit");

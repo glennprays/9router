@@ -591,6 +591,7 @@ retain_releases() {
     [[ -d "$release" && ! -L "$release" ]] || continue
     [[ "$release" == "$release_dir" || ( -n "$previous_target" && "$release" == "$previous_target" ) ]] && continue
     name="${release##*/}"
+    [[ "$name" == *.failed-* ]] && continue
     [[ "$name" =~ $TAG_PATTERN ]] || continue
     "$RM_BIN" -rf -- "$release"
 done

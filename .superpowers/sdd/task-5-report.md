@@ -501,4 +501,6 @@ $ cd tests && npx vitest run unit/external-update-mode.test.js unit/github-deplo
 
 The focused assertions now include setup ordering, regular-unit cleanup, confirmed-stop and database-directory safety, release/failed-artifact retention, fixed-unit validation, external 409 guidance, and JSON health-loop requirements. No formatter, linter, project-wide suite, or real lifecycle command was run.
 
+Retention explicitly excludes all `.failed-*` release directories before matching stable tags, so failed prerelease artifacts are preserved as required.
+
 Linux-only deferrals: root/systemd lifecycle and stop-state failure injection; service-account/group and runuser transitions; exact-tag GitHub fetch/build; fixed-unit installation; database backup/restore and atomic symlink switching; retention and first-install rollback failures; and VPS health verification.

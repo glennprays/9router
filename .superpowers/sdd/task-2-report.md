@@ -192,4 +192,6 @@ $ cd tests && npx vitest run unit/external-update-mode.test.js unit/github-deplo
 
 Focused source assertions cover setup-before-database-capture ordering, regular-unit cleanup, confirmed-stop database guards, writable service-owned database directory, root-owned runtime/backup/deployment parents, stable and failed release naming/preservation, fixed-unit comparison/install content, external route guidance, and all three runbook JSON health loops.
 
+The final retention guard explicitly skips every `.failed-*` directory before applying the stable-tag matcher, including prerelease-tag failure names.
+
 Linux-only deferrals remain: root/systemd lifecycle, stop-state failure injection, account/group transitions, runuser ownership, exact-tag fetch/build, fixed-unit installation, no-follow database replacement, atomic symlink rollback, retention failure rollback, and first-install cleanup on a disposable Linux host.
