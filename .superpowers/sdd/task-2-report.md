@@ -245,3 +245,57 @@ $ cd tests && npx vitest run unit/external-update-mode.test.js unit/github-deplo
 The focused source assertion now proves the EXIT trap initializes `rollback_result=0`, invokes the selected rollback through an `|| rollback_result=$?` guard, and continues to failed-release preservation, failure-log/status writing, and lock release. Rollback symlink restoration now creates `current.new` and replaces `current` with `mv -Tf` without first removing `current`; the previous target remains constrained to a validated direct child of the managed releases directory. Database `stat %F` parsing is locale-pinned with `LC_ALL=C`. The runbook verification and manual rollback health loops now close before the database restore block. Reported database ownership matches the implementation: `9router:9router`.
 
 Linux/systemd lifecycle, rollback failure injection, atomic symlink behavior on the target VPS, locale behavior on the target distribution, and database restore execution remain deferred; only the requested shell syntax and focused macOS tests were run.
+## Final-review findings round (four findings)
+
+### Fixes
+
+1. Blocker: both tag-verification calls (`git rev-parse HEAD` and `git rev-parse refs/tags/<tag>^{commit}`) now run through `"$RUNUSER_BIN" -u 9router --`, matching the init/remote/fetch/checkout calls, so verification executes as the checkout owner inside the 9router-owned candidate before the root chown. The `[[ "$head_commit" == "$tag_commit" ]]` equality check and the fixed `/usr/bin/git` and `/usr/sbin/runuser` binary paths are unchanged.
+2. `atomic_switch_to` guards both swap steps: `"$LN_BIN" -s ... || return 1` and `"$MV_BIN" -Tf ... || return 1`. A failed swap can no longer fall through to `current_switched=1` or report success; callers keep their existing `|| fail` handling of the function result.
+3. `stop_service_confirmed` sets `stop_confirmation_failed=0` on entry, so every attempt is evaluated independently. A second, successful stop during EXIT-trap rollback no longer inherits a stale failure flag, preventing rollback from wrongly reporting rollback-failed and skipping restart/restore.
+4. `resolve_current_target` and `resolve_current_tag` no longer call `fail` inside what was a command-substitution subshell (which swallowed the specific `failure_code`). They set `failure_code` to `current-release-missing`/`current-release-invalid` and return nonzero; `update_release` invokes them in the parent shell with `|| fail "$failure_code"`, so `status.json` and the failure log now record the specific code instead of generic `deployment-failed`. Resolution output is captured through the new `resolved_current_target`/`resolved_current_tag` globals.
+
+### Local mechanism repro (macOS, no Linux lifecycle)
+
+Dubious-ownership mechanism, mirroring root rev-parse in a non-root-owned checkout:
+
+```text
+$ GIT_TEST_ASSUME_DIFFERENT_OWNER=1 /usr/bin/git rev-parse HEAD
+fatal: detected dubious ownership in repository at '/Users/glennpray/projects/9router'
+(exit 128)
+```
+
+The identical `git -C <repo> rev-parse HEAD` run as the checkout owner exits 0; `runuser -u 9router --` reproduces that owner path on Linux.
+
+Command-substitution failure-code mechanism, under `set -Eeuo pipefail` with an EXIT trap:
+
+```text
+OLD pattern (v="$(resolver)" where the resolver exits 1):
+OLD trap records error: deployment-failed
+
+NEW pattern (resolver sets failure_code and returns 1; parent runs resolver || fail "$failure_code"):
+github-deploy: current-release-missing
+NEW trap records error: current-release-missing
+```
+
+### Focused test additions
+
+`tests/unit/github-deploy-script.test.js` gained one deterministic source assertion block, `it("verifies tags as the checkout owner and fails switch and resolution closed")`, covering: both rev-parse calls routed through `"$RUNUSER_BIN" -u 9router -- "$GIT_BIN"` (and no bare `$GIT_BIN` `head_commit` capture), the preserved commit-equality check, `|| return 1` on both `ln` and `mv` inside `atomic_switch_to` with `current_switched=1` ordered after the swap, `stop_confirmation_failed=0` placed before the `systemctl stop` in `stop_service_confirmed`, and parent-shell `|| fail "$failure_code"` resolution with both specific codes set via `return 1` (no `fail "current-release-missing"` and no `previous_target="$(resolve_current_target)"` subshell capture remaining).
+
+### Verification evidence
+
+```text
+$ bash -n deploy/github-deploy.sh
+(no output; exit 0)
+
+$ cd tests && npx vitest run unit/external-update-mode.test.js unit/github-deploy-script.test.js
+ RUN  v4.1.11 /Users/glennpray/projects/9router/tests
+
+ Test Files  2 passed (2)
+      Tests  22 passed (22)
+   Start at  16:29:25
+   Duration  353ms (transform 181ms, setup 0ms, import 284ms, tests 54ms, environment 0ms)
+```
+
+### Linux-only deferrals
+
+`runuser` execution as the service account, root-versus-owner `git rev-parse` against the real staged candidate, real `ln -s`/`mv -Tf` swap atomicity, `systemctl` stop/restart confirmation with the reset confirmation flag, and the end-to-end update rollback remain deferred to a disposable Linux VPS. Only shell syntax, the focused macOS suites, and the local semantic repros above were exercised.

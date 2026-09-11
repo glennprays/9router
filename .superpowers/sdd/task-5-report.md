@@ -549,3 +549,211 @@ $ cd tests && npx vitest run unit/external-update-mode.test.js unit/github-deplo
 This run covers the guarded EXIT rollback call and confirms the cleanup sequence remains source-asserted after it: failed-release preservation, failure-log/status writing, and lock release. It also covers atomic `current.new` plus `mv -Tf` rollback restoration without removing `current`, direct-child managed-target validation, locale-independent database `stat %F`, and the two closed runbook fences. The reports now state the observed database directory owner/group `9router:9router`, matching the deployment script.
 
 Deferred: no real Linux/systemd lifecycle, rollback failure injection, VPS filesystem-atomicity exercise, locale-specific `stat` execution, or database restore was run. No formatter, linter, project-wide suite, real lifecycle, or other command was run.
+## Final verification pass (current branch)
+
+### 1. Shell syntax
+
+Command:
+
+```text
+bash -n deploy/github-deploy.sh
+```
+
+Exact result: no stdout/stderr; exit status `0`.
+
+### 2. Focused tests
+
+Command:
+
+```text
+cd tests && npx vitest run unit/external-update-mode.test.js unit/github-deploy-script.test.js
+```
+
+Exact result:
+
+```text
+ RUN  v4.1.11 /Users/glennpray/projects/9router/tests
+
+
+ Test Files  2 passed (2)
+      Tests  21 passed (21)
+   Start at  15:47:57
+   Duration  438ms (transform 252ms, setup 0ms, import 366ms, tests 88ms, environment 0ms)
+```
+
+### 3. Production build
+
+Command:
+
+```text
+npm run build
+```
+
+Exit status: `0`. The build compiled successfully, completed TypeScript, and generated `138` static pages. The exact postbuild standalone asset-copy output was:
+
+```text
+> 9router-app@0.5.69 postbuild
+> node scripts/copy-standalone-assets.mjs
+
+[standalone-assets] Copied static assets to /Users/glennpray/projects/9router/.next/standalone/.next/static
+[standalone-assets] Copied public assets to /Users/glennpray/projects/9router/.next/standalone/public
+[standalone-assets] Copied custom-server.js to /Users/glennpray/projects/9router/.next/standalone/custom-server.js
+```
+
+### 4. Focused baseline regression verification
+
+The focused Vitest JSON was generated with:
+
+```text
+cd tests && npx vitest run unit/external-update-mode.test.js unit/github-deploy-script.test.js --reporter=json --outputFile=/tmp/9router-task5-final-results-current.json
+```
+
+Exact output:
+
+```text
+JSON report written to /tmp/9router-task5-final-results-current.json
+```
+
+The verifier was run with the required positional path:
+
+```text
+node tests/__baseline__/verify-no-regression.mjs /tmp/9router-task5-final-results-current.json
+```
+
+Exact output:
+
+```text
+✅ No regression. (now fails=0, baseline known=24, all known)
+```
+
+### 5. Disposable external-mode production API
+
+The standalone server was launched from `.next/standalone/custom-server.js` on port `20129` with `UPDATE_SOURCE=external`, `NODE_ENV=production`, an isolated temporary `DATA_DIR`, a temporary environment file, and `JWT_SECRET`/`INITIAL_PASSWORD` values scoped to the temporary run. The shared `9router-dev-ui` process was not stopped or restarted.
+
+Exact API results:
+
+```text
+GET /api/version
+{"updateSource":"external","currentVersion":"0.5.69","latestVersion":null,"hasUpdate":false,"managedExternally":true}
+HTTP 200
+
+POST /api/version/update (unauthenticated)
+{"error":"Unauthorized"}
+HTTP 401
+
+POST /api/version/shutdown (unauthenticated)
+{"error":"Unauthorized"}
+HTTP 401
+
+POST /api/auth/login
+{"success":true,"mustChangePassword":false}
+HTTP 200
+
+POST /api/version/update (authenticated)
+{"success":false,"message":"Updates are managed externally. Download and review the tag-pinned deployment script deploy/github-deploy.sh from GitHub, then run update --tag <tag>."}
+HTTP 409
+
+POST /api/version/shutdown (authenticated)
+{"success":false,"message":"Shutdown is managed externally."}
+HTTP 409
+```
+
+### 6. Disposable dashboard browser smoke
+
+The browser opened `http://127.0.0.1:20129/dashboard`, authenticated with the temporary password, and observed:
+
+```text
+{
+  "url": "http://127.0.0.1:20129/dashboard",
+  "title": "9Router - AI Infrastructure Management",
+  "hasNpmUpdateBanner": false,
+  "hasInstallAction": false,
+  "hasDashboardContent": true
+}
+```
+
+The browser then clicked the normal `dns Providers` navigation link:
+
+```text
+{
+  "url": "http://127.0.0.1:20129/dashboard/providers",
+  "title": "9Router - AI Infrastructure Management",
+  "hasBody": true
+}
+```
+
+The managed browser tab was released. The disposable server stopped with exit status `0`.
+The browser URL-wait helper timed out while waiting on its wildcard pattern, but the subsequent observation confirmed `/dashboard` and the content assertions passed; this was not a server or navigation failure.
+
+
+### 7. Cleanup evidence
+
+Command:
+
+```text
+rm -rf /tmp/9router-task5-current.NIStvK /tmp/9router-task5-final-results-current.json && test ! -e /tmp/9router-task5-current.NIStvK && test ! -e /tmp/9router-task5-final-results-current.json && ! lsof -nP -iTCP:20129 -sTCP:LISTEN
+```
+
+Exact cleanup result: no stdout/stderr; exit status `0`; the temporary directory and results file were absent and no listener remained on port `20129`.
+
+### 8. Updater/package/automation audit
+
+The working-tree audit commands:
+
+```text
+git status --short
+git diff --name-status
+git diff --cached --name-status
+```
+
+produced no output.
+
+The complete branch file-scope command:
+
+```text
+git diff --name-status 73d082a06bfc80b454a8493b0e1b0f2894d28260..HEAD
+```
+
+reported only the intended `.env.example`, scratch reports, deployment script/unit, version routes, update-mode helper, runbook, and focused tests. In particular:
+
+```text
+git diff --name-status 73d082a06bfc80b454a8493b0e1b0f2894d28260..HEAD -- package.json cli/package.json .github
+```
+
+produced no output. No root/CLI package or `.github` change was introduced. No dashboard page/component was changed; the only application changes are the intended version routes and update-mode helper.
+
+The source audit found no `registry.npmjs.org/9router`. The remaining `npm i -g 9router@latest` occurrences are preserved npm/desktop updater comments/configuration in `src/lib/mitm/manager.js`, `src/shared/constants/config.js`, and `cli/scripts/buildMitm.js`. `spawnUpdaterAndExit` remains only in the preserved updater implementation and the existing npm update route; `UPDATE_SOURCE=external` is checked before the updater call, and the authenticated production smoke returned `409`. No update timer or privileged dashboard trigger was added.
+
+### 9. Linux-only deferrals and concerns
+
+No Linux/VPS or systemd command was run on macOS. The following remain unverified and are explicitly not claimed:
+
+- `systemd-analyze verify` and the real service-unit lifecycle.
+- Root/service-account/group transitions, `runuser` ownership, and exact-tag GitHub fetch/build.
+- VPS install, health endpoint, second-tag update, authenticated `/v1` request, and forced failed-health rollback with release/database restoration.
+
+No formatter, linter, broad test suite, or shared development process restart was performed.
+## Final-review findings rerun (post-ee5017df)
+
+All four final-review findings are fixed in `deploy/github-deploy.sh`: (1) both `git rev-parse` tag-verification calls in `clone_and_build` run through `runuser -u 9router --` so verification happens as the checkout owner before the root chown (blocker; equality check and fixed binary paths kept); (2) `atomic_switch_to` checks `ln -s` and `mv -Tf` with `|| return 1`; (3) `stop_service_confirmed` resets `stop_confirmation_failed=0` on entry so rollback re-stops are judged independently; (4) `resolve_current_target`/`resolve_current_tag` now set `failure_code` and return nonzero, and `update_release` checks them in the parent shell so `status.json`/failure logs record `current-release-missing`/`current-release-invalid` instead of generic `deployment-failed`.
+
+### Checks rerun
+
+```text
+$ bash -n deploy/github-deploy.sh
+(no output; exit 0)
+
+$ cd tests && npx vitest run unit/external-update-mode.test.js unit/github-deploy-script.test.js
+ RUN  v4.1.11 /Users/glennpray/projects/9router/tests
+
+ Test Files  2 passed (2)
+      Tests  22 passed (22)
+   Start at  16:29:25
+   Duration  353ms (transform 181ms, setup 0ms, import 284ms, tests 54ms, environment 0ms)
+```
+
+Local macOS repros (no Linux lifecycle): `GIT_TEST_ASSUME_DIFFERENT_OWNER=1 git rev-parse HEAD` exits 128 with `fatal: detected dubious ownership`, while the identical rev-parse run as the checkout owner exits 0 — matching the new `runuser -u 9router --` verification path; an `set -Eeuo pipefail` EXIT-trap repro shows the old subshell resolver pattern recording generic `deployment-failed` while the new parent-shell `resolver || fail "$failure_code"` pattern records `current-release-missing`. Details in `.superpowers/sdd/task-2-report.md`.
+
+### Linux-only deferrals
+
+Unchanged: real root/systemd lifecycle, `runuser` ownership transitions, dubious-ownership behavior against a real staged candidate, `ln`/`mv -Tf` swap atomicity on ext4, stop/rollback confirmation with the reset flag, and VPS health/rollback verification were not run on macOS and remain deferred to a disposable Linux VPS. No formatter, linter, or project-wide suite was run.

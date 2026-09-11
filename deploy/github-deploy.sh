@@ -74,6 +74,8 @@ current_tag=""
 stop_confirmation_failed=0
 previous_target=""
 previous_tag=""
+resolved_current_target=""
+resolved_current_tag=""
 backup_path=""
 database_existed_before=0
 NPM_HOME=""
@@ -227,6 +229,7 @@ service_state_is_stopped() {
 }
 
 stop_service_confirmed() {
+  stop_confirmation_failed=0
   if ! "$SYSTEMCTL_BIN" stop "$SERVICE_NAME" >/dev/null 2>&1; then
     stop_confirmation_failed=1
     return 1
@@ -492,17 +495,17 @@ ensure_environment() {
 
 resolve_current_target() {
   local canonical
-  [[ -L "$CURRENT_LINK" ]] || fail "current-release-missing"
-  canonical="$($READLINK_BIN -f -- "$CURRENT_LINK")" || fail "current-release-missing"
-  [[ -d "$canonical" && ! -L "$canonical" && "$($DIRNAME_BIN "$canonical")" == "$RELEASES_DIR" ]] || fail "current-release-invalid"
-  printf '%s' "$canonical"
+  [[ -L "$CURRENT_LINK" ]] || { failure_code="current-release-missing"; return 1; }
+  canonical="$($READLINK_BIN -f -- "$CURRENT_LINK")" || { failure_code="current-release-missing"; return 1; }
+  [[ -d "$canonical" && ! -L "$canonical" && "$($DIRNAME_BIN "$canonical")" == "$RELEASES_DIR" ]] || { failure_code="current-release-invalid"; return 1; }
+  resolved_current_target="$canonical"
 }
 
 resolve_current_tag() {
   local target="$1" target_tag
   target_tag="$("$GIT_BIN" -C "$target" describe --tags --exact-match HEAD 2>/dev/null || true)"
-  [[ "$target_tag" =~ $TAG_PATTERN ]] || fail "current-release-invalid"
-  printf '%s' "$target_tag"
+  [[ "$target_tag" =~ $TAG_PATTERN ]] || { failure_code="current-release-invalid"; return 1; }
+  resolved_current_tag="$target_tag"
 }
 
 clone_and_build() {
@@ -523,8 +526,8 @@ clone_and_build() {
   "$RUNUSER_BIN" -u 9router -- "$GIT_BIN" -C "$candidate_dir" fetch --no-tags --depth 1 origin "refs/tags/$tag:refs/tags/$tag" || fail "clone-failed"
   "$RUNUSER_BIN" -u 9router -- "$GIT_BIN" -C "$candidate_dir" checkout --detach --force "refs/tags/$tag" || fail "clone-failed"
   local head_commit tag_commit
-  head_commit="$($GIT_BIN -C "$candidate_dir" rev-parse HEAD)" || fail "clone-failed"
-  tag_commit="$($GIT_BIN -C "$candidate_dir" rev-parse "refs/tags/$tag^{commit}")" || fail "clone-failed"
+  head_commit="$("$RUNUSER_BIN" -u 9router -- "$GIT_BIN" -C "$candidate_dir" rev-parse HEAD)" || fail "clone-failed"
+  tag_commit="$("$RUNUSER_BIN" -u 9router -- "$GIT_BIN" -C "$candidate_dir" rev-parse "refs/tags/$tag^{commit}")" || fail "clone-failed"
   [[ "$head_commit" == "$tag_commit" ]] || fail "clone-failed"
   phase="build"
   if ! (cd "$candidate_dir" && \
@@ -608,8 +611,8 @@ atomic_switch_to() {
   local target="$1"
   [[ -d "$target" && ! -L "$target" && "$($DIRNAME_BIN "$target")" == "$RELEASES_DIR" ]] || return 1
   safe_remove_symlink "$CURRENT_NEW_LINK" || return 1
-  "$LN_BIN" -s -- "$target" "$CURRENT_NEW_LINK"
-  "$MV_BIN" -Tf -- "$CURRENT_NEW_LINK" "$CURRENT_LINK"
+  "$LN_BIN" -s -- "$target" "$CURRENT_NEW_LINK" || return 1
+  "$MV_BIN" -Tf -- "$CURRENT_NEW_LINK" "$CURRENT_LINK" || return 1
   current_switched=1
 }
 
@@ -674,7 +677,8 @@ install_release() {
 update_release() {
   ensure_account_and_directories; ensure_environment
   phase="lock"; "$MKDIR_BIN" "$LOCK_DIR" || fail "deployment-in-progress"; lock_held=1
-  previous_target="$(resolve_current_target)"; previous_tag="$(resolve_current_tag "$previous_target")"; current_tag="$previous_tag"
+  resolve_current_target || fail "$failure_code"; previous_target="$resolved_current_target"
+  resolve_current_tag "$previous_target" || fail "$failure_code"; previous_tag="$resolved_current_tag"; current_tag="$previous_tag"
   if [[ "$previous_tag" == "$tag" ]]; then phase="complete"; printf 'github-deploy: current already targets %s; unchanged\n' "$tag"; write_status true ""; return 0; fi
   clone_and_build; promote_candidate
   phase="stop-service"; transaction_active=1

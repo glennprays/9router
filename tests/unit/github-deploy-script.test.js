@@ -146,4 +146,28 @@ describe("GitHub deployment script arguments", () => {
     expect(exitTrap.indexOf("write_failure_log", rollbackCall)).toBeGreaterThan(rollbackCall);
     expect(exitTrap.indexOf("release_lock")).toBeGreaterThan(exitTrap.indexOf("write_failure_log", rollbackCall));
   });
+  it("verifies tags as the checkout owner and fails switch and resolution closed", () => {
+    expect(scriptSource).toContain('"$RUNUSER_BIN" -u 9router -- "$GIT_BIN" -C "$candidate_dir" rev-parse HEAD');
+    expect(scriptSource).toContain('"$RUNUSER_BIN" -u 9router -- "$GIT_BIN" -C "$candidate_dir" rev-parse "refs/tags/$tag^{commit}"');
+    expect(scriptSource).not.toMatch(/head_commit="\$\(\$?GIT_BIN/);
+    expect(scriptSource).toContain('[[ "$head_commit" == "$tag_commit" ]] || fail "clone-failed"');
+
+    const switchStart = scriptSource.indexOf("atomic_switch_to() {");
+    const switchSource = scriptSource.slice(switchStart, scriptSource.indexOf("retain_releases()", switchStart));
+    expect(switchSource).toContain('"$LN_BIN" -s -- "$target" "$CURRENT_NEW_LINK" || return 1');
+    expect(switchSource).toContain('"$MV_BIN" -Tf -- "$CURRENT_NEW_LINK" "$CURRENT_LINK" || return 1');
+    expect(switchSource.indexOf("current_switched=1")).toBeGreaterThan(switchSource.indexOf('"$MV_BIN" -Tf'));
+
+    const stopStart = scriptSource.indexOf("stop_service_confirmed() {");
+    const stopSource = scriptSource.slice(stopStart, scriptSource.indexOf("safe_remove_symlink()", stopStart));
+    expect(stopSource.indexOf("stop_confirmation_failed=0")).toBeGreaterThan(-1);
+    expect(stopSource.indexOf("stop_confirmation_failed=0")).toBeLessThan(stopSource.indexOf('"$SYSTEMCTL_BIN" stop'));
+
+    expect(scriptSource).toContain('failure_code="current-release-missing"; return 1');
+    expect(scriptSource).toContain('failure_code="current-release-invalid"; return 1');
+    expect(scriptSource).not.toContain('fail "current-release-missing"');
+    expect(scriptSource).toContain('resolve_current_target || fail "$failure_code"');
+    expect(scriptSource).toContain('resolve_current_tag "$previous_target" || fail "$failure_code"');
+    expect(scriptSource).not.toContain('previous_target="$(resolve_current_target)"');
+  });
 });
