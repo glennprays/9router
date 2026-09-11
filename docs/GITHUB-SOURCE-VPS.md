@@ -25,7 +25,8 @@ The systemd unit runs `/opt/9router/current/.next/standalone/custom-server.js` w
 - `User=9router` and `Group=9router`
 - `WorkingDirectory=/opt/9router/current`
 - `/etc/9router/9router.env` as its environment file
-- `PORT=20128` by default
+- `PORT=20128`; this port is fixed because the deployment script's health URL is fixed at `http://127.0.0.1:20128/api/health`
+The systemd unit requires an executable `/usr/bin/node` because its `ExecStart` uses that absolute path; a different `node` found on `PATH` is not sufficient.
 
 Persistent application data is outside the release tree at `/var/lib/9router`, including the SQLite database at `/var/lib/9router/db/data.sqlite` and deployment backups at `/var/lib/9router/backups/`. Keep `/var/lib/9router` when removing or replacing releases.
 
@@ -98,12 +99,12 @@ For the first install, the approved tag-pinned sequence is:
 
 ```bash
 curl -fsSLo /tmp/9router-deploy-v0.5.70.sh \
-  https://raw.githubusercontent.com/glennpray/9router/v0.5.70/deploy/github-deploy.sh
+  https://raw.githubusercontent.com/glennprays/9router/v0.5.70/deploy/github-deploy.sh
 less /tmp/9router-deploy-v0.5.70.sh
 sudo bash /tmp/9router-deploy-v0.5.70.sh install --tag v0.5.70
 ```
 
-Review the downloaded script before running it. Confirm that it accepts only `install` and `update`, requires an exact release tag, uses the expected `/opt/9router` and `/var/lib/9router` paths, runs `npm ci` and `npm run build` before switching `current`, installs the checked-in systemd unit, and performs a health check. If the project publishes a trusted checksum for the selected tag, compare it independently before executing the script:
+Review the downloaded script before running it. Confirm that it accepts only `install` and `update`, requires an exact release tag, clones the exact repository `https://github.com/glennprays/9router.git` by default, and permits `NINEROUTER_REPOSITORY_URL` only when it matches the validated HTTPS form `https://github.com/<owner>/<repo>.git`. Also confirm that it uses the expected `/opt/9router` and `/var/lib/9router` paths, runs `npm ci` and `npm run build` before switching `current`, installs the checked-in systemd unit, and performs a health check. If the project publishes a trusted checksum for the selected tag, compare it independently before executing the script:
 
 ```bash
 sha256sum /tmp/9router-deploy-v0.5.70.sh
@@ -112,7 +113,7 @@ sha256sum /tmp/9router-deploy-v0.5.70.sh
 Do **not** use this unsafe pattern:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/glennpray/9router/master/deploy/github-deploy.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/glennprays/9router/master/deploy/github-deploy.sh | sudo bash
 ```
 
 A branch such as `master` moves over time. Piping it directly to `sudo bash` gives the reviewer no opportunity to inspect the exact bytes and allows a later branch change to alter a root command without changing the command shown in an operations record. Download a script at the same immutable release tag as the application, inspect it, and then invoke the local file.
@@ -136,9 +137,18 @@ If the environment file is missing or does not contain the required `DATA_DIR=/v
 Run the required service and application checks after install and after every update:
 
 ```bash
+test -x /usr/bin/node
 sudo systemctl status 9router
 sudo journalctl -u 9router -n 100 --no-pager
-curl --fail --silent http://127.0.0.1:20128/api/health
+health_ok=0
+for attempt in $(seq 1 30); do
+  if curl --fail --silent http://127.0.0.1:20128/api/health; then
+    health_ok=1
+    break
+  fi
+  [ "$attempt" -eq 30 ] || sleep 1
+done
+test "$health_ok" -eq 1
 ```
 
 The health response must indicate `ok: true`. Also test the public HTTPS reverse-proxy URL from a client that can reach the VPS:
@@ -162,12 +172,12 @@ Updates are explicit operator actions. Select and review the new tag's deploymen
 
 ```bash
 curl -fsSLo /tmp/9router-deploy-v0.5.71.sh \
-  https://raw.githubusercontent.com/glennpray/9router/v0.5.71/deploy/github-deploy.sh
+  https://raw.githubusercontent.com/glennprays/9router/v0.5.71/deploy/github-deploy.sh
 less /tmp/9router-deploy-v0.5.71.sh
 sudo bash /tmp/9router-deploy-v0.5.71.sh update --tag v0.5.71
 ```
 
-The update stages `/opt/9router/releases/v0.5.71` and builds it before stopping the service. It then stops `9router.service`, backs up `/var/lib/9router/db/data.sqlite` under `/var/lib/9router/backups/`, switches `/opt/9router/current` atomically, starts the service, and performs the local health check. A deployment lock prevents concurrent updates. On a successful update, the new and previous releases are retained; older releases may be removed by the script's retention step.
+The update stages `/opt/9router/releases/v0.5.71` and builds it before stopping the service. It then stops `9router.service`, backs up `/var/lib/9router/db/data.sqlite` under `/var/lib/9router/backups/`, switches `/opt/9router/current` atomically, starts the service, and performs the local health check. A deployment lock prevents concurrent updates. On a successful update, retention leaves only the current and previous release; older rollback requires a new explicit tagged deployment.
 
 There is no automatic GitHub polling, systemd update timer, CI/CD deployment, or background release watcher. Schedule or execute this command through your own reviewed operational process if you need a maintenance window, but keep the tag explicit and review the script first.
 
@@ -203,7 +213,15 @@ sudo rm -f /opt/9router/current.rollback
 sudo ln -s -- "/opt/9router/releases/${GOOD_TAG}" /opt/9router/current.rollback
 sudo mv -Tf -- /opt/9router/current.rollback /opt/9router/current
 sudo systemctl start 9router
-curl --fail --silent http://127.0.0.1:20128/api/health
+health_ok=0
+for attempt in $(seq 1 30); do
+  if curl --fail --silent http://127.0.0.1:20128/api/health; then
+    health_ok=1
+    break
+  fi
+  [ "$attempt" -eq 30 ] || sleep 1
+done
+test "$health_ok" -eq 1
 ```
 
 If the release changed the database schema or data format, restore the backup created before that update while the service is stopped. Use the backup corresponding to the update tag; deployment backups have names like `/var/lib/9router/backups/20260911T120000Z-v0.5.71.sqlite`.
@@ -216,7 +234,15 @@ sudo cp --preserve=mode,ownership \
 sudo chown 9router:9router /var/lib/9router/db/data.sqlite
 sudo chmod 0600 /var/lib/9router/db/data.sqlite
 sudo systemctl start 9router
-curl --fail --silent http://127.0.0.1:20128/api/health
+health_ok=0
+for attempt in $(seq 1 30); do
+  if curl --fail --silent http://127.0.0.1:20128/api/health; then
+    health_ok=1
+    break
+  fi
+  [ "$attempt" -eq 30 ] || sleep 1
+done
+test "$health_ok" -eq 1
 ```
 
 If a rollback does not pass the health check, stop the service and inspect `journalctl` before making another release switch. Never remove `/var/lib/9router` as part of release cleanup.
@@ -237,4 +263,4 @@ If a rollback does not pass the health check, stop the service and inspect `jour
 - Review every release script and use the same exact tag in the raw URL, local filename, and `--tag` argument.
 - Keep the Node service unprivileged as `9router`; only the deployment operation requires root.
 - Terminate public HTTPS at a maintained reverse proxy, restrict the application port with the firewall, and preserve the local-only health check.
-- Retain database backups until the new release has been verified and its rollback window has closed.
+- Retain only the current and previous release after successful deployment; restoring an older rollback target requires a new explicit tagged deployment.
