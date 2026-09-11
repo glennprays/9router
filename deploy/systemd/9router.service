@@ -1,0 +1,18 @@
+[Unit]
+Description=9Router fork
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=9router
+Group=9router
+WorkingDirectory=/opt/9router/current
+EnvironmentFile=/etc/9router/9router.env
+ExecStart=/usr/bin/node /opt/9router/current/.next/standalone/custom-server.js
+Restart=on-failure
+RestartSec=5
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
