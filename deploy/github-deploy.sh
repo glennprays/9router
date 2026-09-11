@@ -7,7 +7,7 @@ readonly DATA_DIR="${DATA_DIR:-/var/lib/9router}"
 readonly ENV_FILE="${ENV_FILE:-/etc/9router/9router.env}"
 readonly SERVICE_NAME="9router.service"
 readonly HEALTH_URL="http://127.0.0.1:20128/api/health"
-readonly TAG_PATTERN='^v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$'
+readonly TAG_PATTERN='^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
 
 operation=""
 tag=""
@@ -15,6 +15,7 @@ repository_url="${NINEROUTER_REPOSITORY_URL:-$DEFAULT_REPOSITORY_URL}"
 phase="arguments"
 failure_code="deployment-failed"
 status_record_written=0
+deployment_started=0
 lock_held=0
 candidate_cleanup=0
 release_dir=""
@@ -159,7 +160,7 @@ on_exit() {
     if [[ "$candidate_cleanup" -eq 1 && -n "$release_dir" && -d "$release_dir" ]]; then
       rm -rf -- "$release_dir" 2>/dev/null || true
     fi
-    if [[ -d "$UPDATE_DIR" ]]; then
+    if [[ "$deployment_started" -eq 1 && -d "$UPDATE_DIR" ]]; then
       write_failure_log 2>/dev/null || true
       if [[ "$status_record_written" -eq 0 ]]; then
         write_status false "$failure_code" 2>/dev/null || true
@@ -351,6 +352,7 @@ update_release() {
   write_status true ""
 }
 
+deployment_started=1
 if [[ "$operation" == "install" ]]; then
   install_release
 else

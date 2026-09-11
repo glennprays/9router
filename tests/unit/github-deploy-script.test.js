@@ -19,4 +19,11 @@ describe("GitHub deployment script arguments", () => {
     await expect(run("bash", [script, "update", "--tag", "v../current"]))
       .rejects.toMatchObject({ code: 2 });
   });
+  it("accepts a valid tag before applying the non-root guard", async () => {
+    await expect(run("bash", [script, "update", "--tag", "v0.5.70"]))
+      .rejects.toMatchObject({
+        code: 2,
+        stderr: expect.stringContaining("require root"),
+      });
+  });
 });
