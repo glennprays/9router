@@ -28,6 +28,7 @@ readonly LN_BIN="/usr/bin/ln"
 readonly CP_BIN="/usr/bin/cp"
 readonly CHOWN_BIN="/usr/bin/chown"
 readonly CHMOD_BIN="/usr/bin/chmod"
+readonly ENV_BIN="/usr/bin/env"
 readonly INSTALL_BIN="/usr/bin/install"
 readonly RMDIR_BIN="/usr/bin/rmdir"
 readonly DATE_BIN="/usr/bin/date"
@@ -35,6 +36,8 @@ readonly SLEEP_BIN="/usr/bin/sleep"
 readonly RELEASES_DIR="$DEPLOY_ROOT/releases"
 readonly UPDATE_DIR="$DEPLOY_ROOT/update"
 readonly STAGING_DIR="$DATA_ROOT/runtime/deploy-staging"
+readonly NPM_HOME="$DATA_ROOT/runtime/npm-home"
+readonly NPM_CACHE="$DATA_ROOT/runtime/npm-cache"
 readonly LOCK_DIR="$UPDATE_DIR/deploy.lock"
 readonly CURRENT_LINK="$DEPLOY_ROOT/current"
 readonly CURRENT_NEW_LINK="$DEPLOY_ROOT/current.new"
@@ -128,7 +131,7 @@ done
 for prerequisite in \
   "$GIT_BIN" "$NODE_BIN" "$NPM_BIN" "$CURL_BIN" "$SYSTEMCTL_BIN" "$READLINK_BIN" \
   "$RUNUSER_BIN" "$ID_BIN" "$USERADD_BIN" "$STAT_BIN" "$MKDIR_BIN" "$RM_BIN" "$DIRNAME_BIN" "$MV_BIN" \
-  "$LN_BIN" "$CP_BIN" "$CHOWN_BIN" "$CHMOD_BIN" "$INSTALL_BIN" "$RMDIR_BIN" "$DATE_BIN" "$SLEEP_BIN"; do
+  "$LN_BIN" "$CP_BIN" "$CHOWN_BIN" "$CHMOD_BIN" "$INSTALL_BIN" "$RMDIR_BIN" "$DATE_BIN" "$SLEEP_BIN" "$ENV_BIN"; do
   [[ -x "$prerequisite" ]] || argument_error "missing prerequisite: $prerequisite"
 done
 started_at="$($DATE_BIN -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -284,12 +287,12 @@ ensure_account_and_directories() {
   if ! "$ID_BIN" -u 9router >/dev/null 2>&1; then
     "$USERADD_BIN" --system --home-dir "$DATA_ROOT" --shell /usr/sbin/nologin 9router || fail "account-creation-failed"
   fi
-  "$MKDIR_BIN" -p "$RELEASES_DIR" "$UPDATE_DIR" "$STAGING_DIR" "$DATA_ROOT/db" "$BACKUP_DIR" /etc/9router
+  "$MKDIR_BIN" -p "$RELEASES_DIR" "$UPDATE_DIR" "$STAGING_DIR" "$NPM_HOME" "$NPM_CACHE" "$DATA_ROOT/db" "$BACKUP_DIR" /etc/9router
   "$CHMOD_BIN" 0755 "$DEPLOY_ROOT" "$RELEASES_DIR" /etc/9router
-  "$CHMOD_BIN" 0700 "$UPDATE_DIR" "$STAGING_DIR"
+  "$CHMOD_BIN" 0700 "$UPDATE_DIR" "$STAGING_DIR" "$NPM_HOME" "$NPM_CACHE"
   "$CHMOD_BIN" 0750 "$DATA_ROOT" "$DATA_ROOT/db" "$BACKUP_DIR"
   "$CHOWN_BIN" root:root "$DEPLOY_ROOT" "$RELEASES_DIR" "$UPDATE_DIR" /etc/9router
-  "$CHOWN_BIN" 9router:9router "$STAGING_DIR" "$DATA_ROOT" "$DATA_ROOT/db" "$BACKUP_DIR"
+  "$CHOWN_BIN" 9router:9router "$STAGING_DIR" "$NPM_HOME" "$NPM_CACHE" "$DATA_ROOT" "$DATA_ROOT/db" "$BACKUP_DIR"
 }
 
 ensure_environment() {
@@ -348,7 +351,21 @@ clone_and_build() {
   tag_commit="$($GIT_BIN -C "$candidate_dir" rev-parse "refs/tags/$tag^{commit}")" || fail "clone-failed"
   [[ "$head_commit" == "$tag_commit" ]] || fail "clone-failed"
   phase="build"
-  if ! (cd "$candidate_dir" && "$RUNUSER_BIN" -u 9router -- "$NPM_BIN" ci && "$RUNUSER_BIN" -u 9router -- "$NPM_BIN" run build); then
+  if ! (cd "$candidate_dir" && \
+    "$RUNUSER_BIN" -u 9router -- "$ENV_BIN" -i \
+      "HOME=$NPM_HOME" \
+      "npm_config_cache=$NPM_CACHE" \
+      "npm_config_userconfig=$NPM_HOME/npmrc" \
+      "npm_config_globalconfig=/dev/null" \
+      "PATH=/usr/bin:/bin" \
+      "$NPM_BIN" ci && \
+    "$RUNUSER_BIN" -u 9router -- "$ENV_BIN" -i \
+      "HOME=$NPM_HOME" \
+      "npm_config_cache=$NPM_CACHE" \
+      "npm_config_userconfig=$NPM_HOME/npmrc" \
+      "npm_config_globalconfig=/dev/null" \
+      "PATH=/usr/bin:/bin" \
+      "$NPM_BIN" run build); then
     fail "build-failed"
   fi
   "$CHOWN_BIN" -R root:9router "$candidate_dir" || fail "release-ownership-failed"
@@ -366,14 +383,20 @@ promote_candidate() {
 health_check() {
   local health_file="$UPDATE_DIR/health.$$"
   local http_status
-  local remaining
+  local deadline_ms
+  local now_ms
+  local remaining_ms
   local curl_timeout
+  local sleep_seconds
   "$RM_BIN" -f -- "$health_file"
-  local deadline=$((SECONDS + 30))
-  while (( SECONDS < deadline )); do
-    remaining=$((deadline - SECONDS))
-    curl_timeout=$((remaining < 2 ? remaining : 2))
-    http_status="$($CURL_BIN --silent --show-error --output "$health_file" --write-out '%{http_code}' --max-time "$curl_timeout" "$HEALTH_URL" 2>/dev/null || true)"
+  now_ms="$("$DATE_BIN" -u +%s%3N)"
+  deadline_ms=$((now_ms + 30000))
+  while :; do
+    now_ms="$("$DATE_BIN" -u +%s%3N)"
+    remaining_ms=$((deadline_ms - now_ms))
+    (( remaining_ms > 0 )) || break
+    curl_timeout="$(printf '%d.%03d' "$((remaining_ms / 1000))" "$((remaining_ms % 1000))")"
+    http_status="$("$CURL_BIN" --silent --show-error --output "$health_file" --write-out '%{http_code}' --max-time "$curl_timeout" "$HEALTH_URL" 2>/dev/null || true)"
     if [[ "$http_status" == "200" ]] && "$NODE_BIN" - "$health_file" >/dev/null 2>&1 <<'NODE'
 const fs = require("node:fs");
 const value = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
@@ -383,10 +406,16 @@ NODE
       "$RM_BIN" -f -- "$health_file"
       return 0
     fi
-    remaining=$((deadline - SECONDS))
-    (( remaining > 0 )) || break
-    "$SLEEP_BIN" "$((remaining < 1 ? remaining : 1))"
-done
+    now_ms="$("$DATE_BIN" -u +%s%3N)"
+    remaining_ms=$((deadline_ms - now_ms))
+    (( remaining_ms > 0 )) || break
+    if (( remaining_ms < 1000 )); then
+      sleep_seconds="$(printf '0.%03d' "$remaining_ms")"
+    else
+      sleep_seconds="1"
+    fi
+    "$SLEEP_BIN" "$sleep_seconds"
+  done
   "$RM_BIN" -f -- "$health_file"
   return 1
 }
@@ -410,10 +439,18 @@ done
 
 reject_existing_install() {
   [[ ! -e "$CURRENT_LINK" && ! -L "$CURRENT_LINK" ]] || fail "existing-deployment"
-  [[ ! -e "$SERVICE_UNIT_PATH" ]] || fail "existing-deployment"
-  if "$SYSTEMCTL_BIN" is-active --quiet "$SERVICE_NAME" || "$SYSTEMCTL_BIN" is-enabled --quiet "$SERVICE_NAME"; then
-    fail "existing-deployment"
+  [[ ! -e "$SERVICE_UNIT_PATH" && ! -L "$SERVICE_UNIT_PATH" ]] || fail "existing-deployment"
+  local load_state
+  if ! load_state="$("$SYSTEMCTL_BIN" show "$SERVICE_NAME" --property=LoadState --value 2>/dev/null)"; then
+    fail "service-query-failed"
   fi
+  case "$load_state" in
+    not-found)
+      ;;
+    *)
+      fail "existing-deployment"
+      ;;
+  esac
 }
 
 install_release() {
@@ -479,11 +516,11 @@ update_release() {
     failure_code="health-check-failed"
     fail "$failure_code"
   fi
-  transaction_active=0
   phase="retention"
   retain_releases
   phase="complete"
   write_status true ""
+  transaction_active=0
 }
 
 deployment_started=1
