@@ -68,7 +68,18 @@ export async function resolveBudgetContext({ apiKey, provider, model, body }) {
 
   const memberPolicy = apiKey ? await getApiKeyPolicyByKey(apiKey) : null;
   const teamPolicy = await getTeamBudgetPolicy();
-  const accountBudgets = await getKiroAccountBudgets();
+  const storedBudgets = await getKiroAccountBudgets();
+
+  // Budget rows outlive their connection (deleted account, hand-edited backup) or
+  // belong to a paused one; only ceilings on active accounts may gate admission.
+  let conns = [];
+  const accountBudgets = new Map();
+  if (storedBudgets.size > 0) {
+    conns = await getProviderConnections({ provider: "kiro", isActive: true });
+    for (const connection of conns) {
+      if (storedBudgets.has(connection.id)) accountBudgets.set(connection.id, storedBudgets.get(connection.id));
+    }
+  }
 
   const memberInput = finiteLimit(memberPolicy?.inputTokensMonthly);
   const memberOutput = finiteLimit(memberPolicy?.outputTokensMonthly);
@@ -134,7 +145,6 @@ export async function resolveBudgetContext({ apiKey, provider, model, body }) {
   let excludeConnectionIds = [];
   let accountRemaining = null;
   if (anyAccountCeiling) {
-    const conns = await getProviderConnections({ provider: "kiro", isActive: true });
     const usageMap = await getAllKiroAccountUsage(period);
     accountRemaining = new Map();
     let eligibleCount = 0;
