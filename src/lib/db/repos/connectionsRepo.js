@@ -86,12 +86,16 @@ export async function getProviderConnectionById(id) {
   return rowToConn(row);
 }
 
-// Internal sync reorder — must be called INSIDE a transaction
-function reorderInTx(db, providerId) {
+// Internal sync reorder — must be called INSIDE a transaction.
+// `movedId` is the row whose priority was just set explicitly: it wins ties so the
+// caller's intent does not depend on millisecond `updatedAt` resolution.
+function reorderInTx(db, providerId, movedId = null) {
   const list = db.all(`SELECT * FROM providerConnections WHERE provider = ?`, [providerId]).map(rowToConn);
   list.sort((a, b) => {
     const pDiff = (a.priority || 0) - (b.priority || 0);
     if (pDiff !== 0) return pDiff;
+    if (a.id === movedId) return -1;
+    if (b.id === movedId) return 1;
     return new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0);
   });
   list.forEach((c, i) => {
@@ -198,7 +202,7 @@ export async function updateProviderConnection(id, data) {
     const existing = rowToConn(row);
     const merged = { ...existing, ...data, updatedAt: new Date().toISOString() };
     upsert(db, merged);
-    if (data.priority !== undefined) reorderInTx(db, existing.provider);
+    if (data.priority !== undefined) reorderInTx(db, existing.provider, id);
     result = merged;
   });
   return result;
@@ -211,6 +215,10 @@ export async function deleteProviderConnection(id) {
     const row = db.get(`SELECT provider FROM providerConnections WHERE id = ?`, [id]);
     if (!row) return;
     db.run(`DELETE FROM providerConnections WHERE id = ?`, [id]);
+    // Per-account Kiro budget/usage rows are keyed by connectionId and would otherwise
+    // outlive the account (a re-added account gets a fresh id, so nothing is lost).
+    db.run(`DELETE FROM kiroAccountBudget WHERE connectionId = ?`, [id]);
+    db.run(`DELETE FROM kiroAccountUsage WHERE connectionId = ?`, [id]);
     reorderInTx(db, row.provider);
     ok = true;
   });

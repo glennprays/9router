@@ -136,10 +136,12 @@ A non-Kiro request never increments any Kiro budget counter, even when it carrie
 
 ### Reset semantics
 
-- Reset member usage: clear usage rows for that API key.
-- Reset team usage: clear team usage periods; it does not clear member or account counters.
-- Reset account usage: clear the selected account's current usage period; it does not clear team or member counters.
+- Reset member usage: clear every usage period for that API key.
+- Reset team usage: clear every team usage period; it does not clear member or account counters.
+- Reset account usage: clear every usage period for the selected account; it does not clear team or member counters.
+- All resets clear every stored period (mirroring the existing per-key reset), not only the current month.
 - Reset does not delete historical `usageHistory` records.
+- Deleting a Kiro connection removes its account budget and usage rows; a re-added account starts unlimited at zero.
 
 ## Management API
 
@@ -169,7 +171,7 @@ Accepts an optional non-negative finite `creditsMonthly` value. `null` clears th
 
 ### `POST /api/kiro/accounts/:connectionId/reset-usage`
 
-Clears the selected account's current usage period and returns the reset month/result. Historical request records remain intact.
+Clears every stored usage period for the selected account and returns `{ message }`. Historical request records remain intact.
 
 ### `PUT /api/team/budget`
 
@@ -187,7 +189,7 @@ Accepts optional non-negative numeric values:
 
 ### `POST /api/team/budget/reset-usage`
 
-Clears team usage counters and returns the reset month/result. Historical request records remain intact.
+Clears every stored team usage period and returns `{ message }`. Historical request records remain intact.
 
 ### `POST /api/keys/:id/rotate`
 

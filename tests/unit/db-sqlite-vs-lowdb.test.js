@@ -172,7 +172,22 @@ describe("DB SQLite layer — public API parity", () => {
     expect(await sqliteDb.getKiroAccountBudget("conn-backup")).toBeNull();
   });
 
+  it("deleting a Kiro connection purges its budget and usage rows", async () => {
+    const conn = await sqliteDb.createProviderConnection({
+      provider: "kiro", authType: "oauth", email: "purge@example.com", accessToken: "tok",
+    });
+    const { getAdapter } = await import("@/lib/db/driver.js");
+    const db = await getAdapter();
+    await sqliteDb.setKiroAccountBudget(conn.id, 100);
+    db.transaction(() => {
+      sqliteDb.upsertKiroAccountUsage(db, { connectionId: conn.id, periodKey: "2026-09", credits: 5 });
+    });
 
+    expect(await sqliteDb.deleteProviderConnection(conn.id)).toBe(true);
+
+    expect(await sqliteDb.getKiroAccountBudget(conn.id)).toBeNull();
+    expect((await sqliteDb.getAllKiroAccountUsage("2026-09")).has(conn.id)).toBe(false);
+  });
 
   it("providerConnections: CRUD + reorder by priority", async () => {
     const c1 = await sqliteDb.createProviderConnection({ provider: "test", authType: "apikey", name: "a", apiKey: "k1" });

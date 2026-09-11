@@ -261,6 +261,17 @@ describe("API key budget admission", () => {
     expect(result.reject.status).toBe(429);
   });
 
+  it("ignores budget rows for connections that are no longer active", async () => {
+    // Orphaned by a deleted account (hand-edited backup) and by a paused account:
+    // neither may force the slow path or fail-close the pool.
+    state.accountBudgets = new Map([["deleted", "not-a-number"], ["paused", 500]]);
+    state.connections = [{ id: "connA" }];
+
+    await expect(resolveBudgetContext({
+      apiKey: null, provider: "kiro", model: "claude-haiku", body: { messages: [] },
+    })).resolves.toBeNull();
+  });
+
   it("tightens or skips output for a selected account", () => {
     const budget = {
       outputCap: 40,

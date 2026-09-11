@@ -2,7 +2,9 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import PropTypes from "prop-types";
-import { Card, Button, Input, Modal, CardSkeleton, Toggle, ConfirmModal } from "@/shared/components";
+import Link from "next/link";
+import { Card, Button, Input, Modal, CardSkeleton, Toggle, ConfirmModal, Badge } from "@/shared/components";
+import { getStatusVariant } from "@/shared/utils/connectionStatus";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import {
   TUNNEL_BENEFITS,
@@ -17,6 +19,58 @@ import EndpointRow from "./components/EndpointRow";
 import StatusAlert from "./components/StatusAlert";
 import Tooltip from "./components/Tooltip";
 import SecurityWarning from "./components/SecurityWarning";
+
+// Dashboard-only budget warnings (design: warn at 80%, critical at 90%).
+const USAGE_WARN_PCT = 80;
+const USAGE_CRITICAL_PCT = 90;
+const BUDGET_STATUS_CLEAR_MS = 3000;
+
+const TEAM_BUDGET_FIELDS = [
+  { field: "inputTokensMonthly", usage: "inputTokens", label: "Monthly input tokens", short: "Input tokens", step: "1" },
+  { field: "outputTokensMonthly", usage: "outputTokens", label: "Monthly output tokens", short: "Output tokens", step: "1" },
+  { field: "creditsMonthly", usage: "credits", label: "Monthly Kiro credits", short: "Credits", step: "0.01" },
+];
+
+/** "" → unlimited (null); otherwise a finite non-negative number, else an error string. */
+function parseBudgetInput(value, label) {
+  if (value === "" || value == null) return { value: null };
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0) return { error: `${label} must be a non-negative number` };
+  return { value: number };
+}
+
+/** Utilization of a finite monthly limit; null when the dimension is unlimited. */
+function usageLevel(used, limit) {
+  if (limit == null) return null;
+  const pct = limit > 0 ? (used / limit) * 100 : 100;
+  const level = pct >= 100 ? "exhausted"
+    : pct >= USAGE_CRITICAL_PCT ? "critical"
+    : pct >= USAGE_WARN_PCT ? "warning"
+    : null;
+  return { pct: Math.min(100, Math.round(pct)), level };
+}
+
+function usageHint(used, limit) {
+  if (limit == null) return `Used ${used} · Unlimited`;
+  const { pct } = usageLevel(used, limit);
+  return `Used ${used} / ${limit} · Remaining ${Math.max(0, limit - used)} (${pct}%)`;
+}
+
+function UsageBadge({ used, limit }) {
+  const level = usageLevel(used, limit);
+  if (!level?.level) return null;
+  if (level.level === "exhausted") return <Badge size="sm" variant="error" icon="block">Exhausted</Badge>;
+  return (
+    <Badge size="sm" variant={level.level === "critical" ? "error" : "warning"} icon="warning">
+      {level.pct}% used
+    </Badge>
+  );
+}
+
+UsageBadge.propTypes = {
+  used: PropTypes.number,
+  limit: PropTypes.number,
+};
 export default function APIPageClient({ machineId }) {
   const [keys, setKeys] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -26,6 +80,7 @@ export default function APIPageClient({ machineId }) {
   const [newOutputTokensMonthly, setNewOutputTokensMonthly] = useState("");
   const [newCreditsMonthly, setNewCreditsMonthly] = useState("");
   const [createdKey, setCreatedKey] = useState(null);
+  const [createdKeyMode, setCreatedKeyMode] = useState("created");
   const [teamBudget, setTeamBudget] = useState(null);
   const [kiroAccounts, setKiroAccounts] = useState([]);
   const [teamInputTokensMonthly, setTeamInputTokensMonthly] = useState("");
@@ -33,6 +88,10 @@ export default function APIPageClient({ machineId }) {
   const [teamCreditsMonthly, setTeamCreditsMonthly] = useState("");
   const [accountCreditsMonthly, setAccountCreditsMonthly] = useState({});
   const [confirmState, setConfirmState] = useState(null);
+  // Inline result of the last budget action, scoped to "team" or a Kiro connectionId.
+  const [budgetStatus, setBudgetStatus] = useState(null);
+  const budgetStatusTimer = useRef(null);
+  const autoProvisionRef = useRef(false);
 
   const [requireApiKey, setRequireApiKey] = useState(false);
   const [requireLogin, setRequireLogin] = useState(true);
@@ -273,7 +332,9 @@ export default function APIPageClient({ machineId }) {
 
       let existing = await fetchKeys();
       // Auto-provision a default key for first-time users so the endpoint works out of the box.
-      if (existing.length === 0) {
+      // Concurrent fetchData calls (dev StrictMode double effects) must not each create one.
+      if (existing.length === 0 && !autoProvisionRef.current) {
+        autoProvisionRef.current = true;
         try {
           const createRes = await fetch("/api/keys", {
             method: "POST",
@@ -673,6 +734,7 @@ export default function APIPageClient({ machineId }) {
       const data = await res.json();
 
       if (res.ok) {
+        setCreatedKeyMode("created");
         setCreatedKey(data.key);
         await fetchData();
         setNewKeyName("");
@@ -732,20 +794,44 @@ export default function APIPageClient({ machineId }) {
       console.log("Error resetting key usage:", error);
     }
   };
+  const showBudgetStatus = (scope, type, message) => {
+    clearTimeout(budgetStatusTimer.current);
+    const status = { scope, type, message };
+    setBudgetStatus(status);
+    if (type === "success") {
+      budgetStatusTimer.current = setTimeout(() => {
+        setBudgetStatus((current) => (current === status ? null : current));
+      }, BUDGET_STATUS_CLEAR_MS);
+    }
+  };
+
   const handleSaveTeamBudget = async () => {
+    const inputs = {
+      inputTokensMonthly: teamInputTokensMonthly,
+      outputTokensMonthly: teamOutputTokensMonthly,
+      creditsMonthly: teamCreditsMonthly,
+    };
+    const payload = {};
+    for (const { field, label } of TEAM_BUDGET_FIELDS) {
+      const parsed = parseBudgetInput(inputs[field], label);
+      if (parsed.error) return showBudgetStatus("team", "error", parsed.error);
+      payload[field] = parsed.value;
+    }
     try {
       const res = await fetch("/api/team/budget", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          inputTokensMonthly: teamInputTokensMonthly === "" ? null : Number(teamInputTokensMonthly),
-          outputTokensMonthly: teamOutputTokensMonthly === "" ? null : Number(teamOutputTokensMonthly),
-          creditsMonthly: teamCreditsMonthly === "" ? null : Number(teamCreditsMonthly),
-        }),
+        body: JSON.stringify(payload),
       });
-      if (res.ok) await fetchData();
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        return showBudgetStatus("team", "error", data.error || "Failed to save team budget");
+      }
+      await fetchData();
+      showBudgetStatus("team", "success", "Team budget saved");
     } catch (error) {
       console.log("Error saving team budget:", error);
+      showBudgetStatus("team", "error", "Failed to save team budget");
     }
   };
 
@@ -757,25 +843,35 @@ export default function APIPageClient({ machineId }) {
         setConfirmState(null);
         try {
           const res = await fetch("/api/team/budget/reset-usage", { method: "POST" });
-          if (res.ok) await fetchData();
+          if (!res.ok) return showBudgetStatus("team", "error", "Failed to reset team usage");
+          await fetchData();
+          showBudgetStatus("team", "success", "Team usage reset");
         } catch (error) {
           console.log("Error resetting team usage:", error);
+          showBudgetStatus("team", "error", "Failed to reset team usage");
         }
       },
     });
   };
 
   const handleSaveAccountBudget = async (connectionId) => {
-    const value = accountCreditsMonthly[connectionId] ?? "";
+    const parsed = parseBudgetInput(accountCreditsMonthly[connectionId] ?? "", "Monthly Kiro credits");
+    if (parsed.error) return showBudgetStatus(connectionId, "error", parsed.error);
     try {
       const res = await fetch(`/api/kiro/accounts/${encodeURIComponent(connectionId)}/budget`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ creditsMonthly: value === "" ? null : Number(value) }),
+        body: JSON.stringify({ creditsMonthly: parsed.value }),
       });
-      if (res.ok) await fetchData();
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        return showBudgetStatus(connectionId, "error", data.error || "Failed to save account budget");
+      }
+      await fetchData();
+      showBudgetStatus(connectionId, "success", "Account budget saved");
     } catch (error) {
       console.log("Error saving account budget:", error);
+      showBudgetStatus(connectionId, "error", "Failed to save account budget");
     }
   };
 
@@ -787,9 +883,12 @@ export default function APIPageClient({ machineId }) {
         setConfirmState(null);
         try {
           const res = await fetch(`/api/kiro/accounts/${encodeURIComponent(connectionId)}/reset-usage`, { method: "POST" });
-          if (res.ok) await fetchData();
+          if (!res.ok) return showBudgetStatus(connectionId, "error", "Failed to reset account usage");
+          await fetchData();
+          showBudgetStatus(connectionId, "success", "Account usage reset");
         } catch (error) {
           console.log("Error resetting account usage:", error);
+          showBudgetStatus(connectionId, "error", "Failed to reset account usage");
         }
       },
     });
@@ -805,6 +904,7 @@ export default function APIPageClient({ machineId }) {
           const res = await fetch(`/api/keys/${id}/rotate`, { method: "POST" });
           if (res.ok) {
             const data = await res.json();
+            setCreatedKeyMode("rotated");
             setCreatedKey(data.key);
             await fetchData();
           }
@@ -851,7 +951,32 @@ export default function APIPageClient({ machineId }) {
   const currentEndpoint = baseUrl;
   const teamPolicy = teamBudget?.policy || {};
   const teamUsage = teamBudget?.usage || {};
-  const teamRemaining = teamBudget?.remaining || {};
+  const teamFieldValues = {
+    inputTokensMonthly: teamInputTokensMonthly,
+    outputTokensMonthly: teamOutputTokensMonthly,
+    creditsMonthly: teamCreditsMonthly,
+  };
+  const teamFieldSetters = {
+    inputTokensMonthly: setTeamInputTokensMonthly,
+    outputTokensMonthly: setTeamOutputTokensMonthly,
+    creditsMonthly: setTeamCreditsMonthly,
+  };
+  // Dimensions at or past the warning thresholds, for the team card alert.
+  const teamWarnings = TEAM_BUDGET_FIELDS
+    .map(({ field, usage, short }) => ({ short, level: usageLevel(teamUsage[usage] || 0, teamPolicy[field]) }))
+    .filter(({ level }) => level?.level);
+  const poolTotals = kiroAccounts.reduce((totals, account) => {
+    totals.credits += account.credits || 0;
+    if (account.creditsMonthly == null) totals.unlimited = true;
+    else totals.ceiling += account.creditsMonthly;
+    return totals;
+  }, { credits: 0, ceiling: 0, unlimited: false });
+  const memberTotals = keys.reduce((totals, key) => {
+    totals.inputTokens += key.usage?.inputTokens || 0;
+    totals.outputTokens += key.usage?.outputTokens || 0;
+    totals.credits += key.usage?.credits || 0;
+    return totals;
+  }, { inputTokens: 0, outputTokens: 0, credits: 0 });
 
   return (
     <div className="flex flex-col gap-8">
@@ -1240,40 +1365,33 @@ export default function APIPageClient({ machineId }) {
           Team Kiro Budget
         </h2>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <Input
-            label="Monthly input tokens"
-            type="number"
-            min="0"
-            value={teamInputTokensMonthly}
-            onChange={(e) => setTeamInputTokensMonthly(e.target.value)}
-            placeholder="Unlimited"
-          />
-          <Input
-            label="Monthly output tokens"
-            type="number"
-            min="0"
-            value={teamOutputTokensMonthly}
-            onChange={(e) => setTeamOutputTokensMonthly(e.target.value)}
-            placeholder="Unlimited"
-          />
-          <Input
-            label="Monthly Kiro credits"
-            type="number"
-            min="0"
-            step="0.01"
-            value={teamCreditsMonthly}
-            onChange={(e) => setTeamCreditsMonthly(e.target.value)}
-            placeholder="Unlimited"
-          />
+          {TEAM_BUDGET_FIELDS.map(({ field, usage, label, step }) => (
+            <Input
+              key={field}
+              label={label}
+              type="number"
+              min="0"
+              step={step}
+              value={teamFieldValues[field]}
+              onChange={(e) => teamFieldSetters[field](e.target.value)}
+              placeholder="Unlimited"
+              hint={usageHint(teamUsage[usage] || 0, teamPolicy[field])}
+            />
+          ))}
         </div>
-        <p className="text-xs text-text-muted mt-4">
-          Monthly usage: In {teamUsage.inputTokens || 0} / {teamPolicy.inputTokensMonthly == null ? "unlimited" : teamPolicy.inputTokensMonthly}
-          {" · "}Out {teamUsage.outputTokens || 0} / {teamPolicy.outputTokensMonthly == null ? "unlimited" : teamPolicy.outputTokensMonthly}
-          {" · "}Credits {teamUsage.credits || 0} / {teamPolicy.creditsMonthly == null ? "unlimited" : teamPolicy.creditsMonthly}
-          {" · "}Remaining: In {teamRemaining.inputTokens == null ? "unlimited" : teamRemaining.inputTokens}
-          {" · "}Out {teamRemaining.outputTokens == null ? "unlimited" : teamRemaining.outputTokens}
-          {" · "}Credits {teamRemaining.credits == null ? "unlimited" : teamRemaining.credits}
-        </p>
+        {teamWarnings.length > 0 && (
+          <StatusAlert
+            className="mt-4"
+            status={{
+              type: teamWarnings.some(({ level }) => level.level !== "warning") ? "error" : "warning",
+              message: teamWarnings
+                .map(({ short, level }) => (level.level === "exhausted"
+                  ? `${short}: monthly team limit reached — Kiro requests are rejected until usage is reset or the limit is raised`
+                  : `${short}: ${level.pct}% of the monthly team limit used`))
+                .join(" · "),
+            }}
+          />
+        )}
         <div className="flex items-center gap-2 mt-4">
           <Button onClick={handleSaveTeamBudget} icon="save">Save</Button>
           <Button
@@ -1285,6 +1403,7 @@ export default function APIPageClient({ machineId }) {
             <span className="hidden sm:inline">Reset usage</span>
           </Button>
         </div>
+        {budgetStatus?.scope === "team" && <StatusAlert className="mt-3" status={budgetStatus} />}
       </Card>
 
       {/* Kiro Account Pool */}
@@ -1293,8 +1412,22 @@ export default function APIPageClient({ machineId }) {
           <span className="material-symbols-outlined text-primary">group_work</span>
           Kiro account pool
         </h2>
+        <p className="text-xs text-text-muted mb-4">
+          Pool total: {poolTotals.credits} / {poolTotals.unlimited ? "unlimited" : poolTotals.ceiling} credits
+          {" · "}{kiroAccounts.length} account{kiroAccounts.length === 1 ? "" : "s"}
+          <br />
+          Member total: In {memberTotals.inputTokens}
+          {" · "}Out {memberTotals.outputTokens}
+          {" · "}Credits {memberTotals.credits}
+          {" · "}{keys.length} API key{keys.length === 1 ? "" : "s"}
+        </p>
         {kiroAccounts.length === 0 ? (
-          <p className="text-sm text-text-muted py-6 text-center">No active Kiro accounts connected.</p>
+          <p className="text-sm text-text-muted py-6 text-center">
+            No active Kiro accounts connected.{" "}
+            <Link href="/dashboard/providers/kiro" className="font-medium underline hover:opacity-80">
+              Connect a Kiro account
+            </Link>
+          </p>
         ) : (
           <div className="flex flex-col">
             {kiroAccounts.map((account) => (
@@ -1304,11 +1437,21 @@ export default function APIPageClient({ machineId }) {
               >
                 <div className="flex items-start justify-between gap-4">
                   <div className="min-w-0">
-                    <p className="text-sm font-medium truncate">{account.name}</p>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <p className="text-sm font-medium truncate">{account.name}</p>
+                      {account.testStatus && (
+                        <Badge size="sm" dot variant={getStatusVariant(true, account.testStatus)}>
+                          {account.testStatus}
+                        </Badge>
+                      )}
+                      <UsageBadge used={account.credits || 0} limit={account.creditsMonthly} />
+                    </div>
                     <p className="text-xs text-text-muted mt-1">
-                      Usage: {account.credits || 0} / {account.creditsMonthly == null ? "unlimited" : account.creditsMonthly} credits
-                      {" · "}Remaining: {account.remaining == null ? "unlimited" : account.remaining}
+                      {usageHint(account.credits || 0, account.creditsMonthly)} credits
                     </p>
+                    {account.lastError && getStatusVariant(true, account.testStatus) === "error" && (
+                      <p className="text-xs text-red-500 mt-1 truncate" title={account.lastError}>{account.lastError}</p>
+                    )}
                   </div>
                   <Button
                     variant="ghost"
@@ -1337,6 +1480,7 @@ export default function APIPageClient({ machineId }) {
                     Save
                   </Button>
                 </div>
+                {budgetStatus?.scope === account.connectionId && <StatusAlert status={budgetStatus} />}
               </div>
             ))}
           </div>
@@ -1409,10 +1553,10 @@ export default function APIPageClient({ machineId }) {
         </div>
       </Modal>
 
-      {/* Created Key Modal */}
+      {/* Created / Rotated Key Modal */}
       <Modal
         isOpen={!!createdKey}
-        title="API Key Created"
+        title={createdKeyMode === "rotated" ? "API Key Rotated" : "API Key Created"}
         onClose={() => setCreatedKey(null)}
       >
         <div className="flex flex-col gap-4">
@@ -1421,7 +1565,9 @@ export default function APIPageClient({ machineId }) {
               Save this key now!
             </p>
             <p className="text-sm text-yellow-700 dark:text-yellow-300">
-              This is the only time you will see this key. Store it securely.
+              {createdKeyMode === "rotated"
+                ? "The previous key stopped working immediately. Update every client that used it — this is the only time you will see the new key."
+                : "This is the only time you will see this key. Store it securely."}
             </p>
           </div>
           <div className="flex gap-2">
