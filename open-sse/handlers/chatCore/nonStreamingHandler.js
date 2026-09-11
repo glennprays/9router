@@ -315,6 +315,7 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
 
   // Decloak tool_use names once on raw Claude body, before any translation (INPUT side)
   responseBody = decloakToolNames(responseBody, toolNameMap);
+  const usageWasEstimated = responseBody?.usage?.estimated === true;
 
   const usage = extractUsageFromResponse(responseBody);
   appendLog({ tokens: usage, status: "200 OK" });
@@ -354,7 +355,11 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
   }
 
   if (translatedResponse?.usage) {
-    translatedResponse.usage = filterUsageForFormat(addBufferToUsage(translatedResponse.usage), sourceFormat);
+    const isEstimated = usageWasEstimated || translatedResponse.usage.estimated === true;
+    const clientUsage = isEstimated
+      ? addBufferToUsage({ ...translatedResponse.usage, estimated: true })
+      : translatedResponse.usage;
+    translatedResponse.usage = filterUsageForFormat(clientUsage, sourceFormat);
   }
 
   // Strip reasoning_content only when content is non-empty.

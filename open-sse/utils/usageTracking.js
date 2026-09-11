@@ -142,6 +142,7 @@ export function normalizeUsage(usage) {
   }
 
   if (Object.keys(normalized).length === 0) return null;
+  if (usage.estimated === true) normalized.estimated = true;
   return normalized;
 }
 
@@ -250,7 +251,8 @@ export function extractUsage(chunk) {
       prompt_tokens: u.input_tokens || 0,
       completion_tokens: u.output_tokens || 0,
       cache_read_input_tokens: u.cache_read_input_tokens,
-      cache_creation_input_tokens: u.cache_creation_input_tokens
+      cache_creation_input_tokens: u.cache_creation_input_tokens,
+      estimated: u.estimated
     });
   }
 
@@ -260,7 +262,8 @@ export function extractUsage(chunk) {
       prompt_tokens: chunk.usage.input_tokens || 0,
       completion_tokens: chunk.usage.output_tokens || 0,
       cache_read_input_tokens: chunk.usage.cache_read_input_tokens,
-      cache_creation_input_tokens: chunk.usage.cache_creation_input_tokens
+      cache_creation_input_tokens: chunk.usage.cache_creation_input_tokens,
+      estimated: chunk.usage.estimated
     });
   }
 
@@ -273,7 +276,8 @@ export function extractUsage(chunk) {
       completion_tokens: usage.output_tokens || usage.completion_tokens || 0,
       cached_tokens: cachedTokens,
       reasoning_tokens: usage.output_tokens_details?.reasoning_tokens,
-      prompt_tokens_details: cachedTokens ? { cached_tokens: cachedTokens } : undefined
+      prompt_tokens_details: cachedTokens ? { cached_tokens: cachedTokens } : undefined,
+      estimated: usage.estimated
     });
   }
   // OpenAI format also covers DeepSeek and Kiro terminal usage.
@@ -287,7 +291,8 @@ export function extractUsage(chunk) {
       reasoning_tokens: chunk.usage.completion_tokens_details?.reasoning_tokens,
       kiro_credits: chunk.usage.kiro_credits,
       prompt_tokens_details: chunk.usage.prompt_tokens_details,
-      completion_tokens_details: chunk.usage.completion_tokens_details
+      completion_tokens_details: chunk.usage.completion_tokens_details,
+      estimated: chunk.usage.estimated
     });
   }
 
@@ -300,7 +305,8 @@ export function extractUsage(chunk) {
       completion_tokens: usageMeta.candidatesTokenCount || 0,
       total_tokens: usageMeta.totalTokenCount,
       cached_tokens: usageMeta.cachedContentTokenCount,
-      reasoning_tokens: usageMeta.thoughtsTokenCount
+      reasoning_tokens: usageMeta.thoughtsTokenCount,
+      estimated: usageMeta.estimated
     });
   }
 

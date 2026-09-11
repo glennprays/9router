@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { FORMATS } from "../../open-sse/translator/formats.js";
-import { createSSETransformStreamWithLogger } from "../../open-sse/utils/stream.js";
+import { createPassthroughStreamWithLogger, createSSETransformStreamWithLogger } from "../../open-sse/utils/stream.js";
 
 // Ollama streams NDJSON — one raw JSON object per line, no "data: " prefix.
 // Whatever arrives without a closing newline stays in the line buffer and is
@@ -29,6 +29,156 @@ async function runOllamaStream(input) {
   }
   return text + decoder.decode();
 }
+
+async function runTranslatedStream(input, targetFormat, sourceFormat, provider = "kiro") {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode(input));
+      controller.close();
+    },
+  });
+  const output = stream.pipeThrough(
+    createSSETransformStreamWithLogger(targetFormat, sourceFormat, provider, null, null, "claude-haiku-4.5"),
+  );
+  const reader = output.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    text += decoder.decode(value, { stream: true });
+  }
+  return text + decoder.decode();
+}
+
+async function runPassthroughStream(input, provider = "openai") {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode(input));
+      controller.close();
+    },
+  });
+  const output = stream.pipeThrough(
+    createPassthroughStreamWithLogger(provider, null, "gpt-4o"),
+  );
+  const reader = output.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    text += decoder.decode(value, { stream: true });
+  }
+  return text + decoder.decode();
+}
+
+describe("authoritative usage is not buffered for passthrough responses", () => {
+  it("returns provider-reported OpenAI usage unchanged in the terminal chunk", async () => {
+    const usage = { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12, kiro_credits: 0.5 };
+    const raw = [
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "ok" } }] })}`,
+      `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }], usage })}`,
+      "data: [DONE]",
+      "",
+    ].join("\n\n");
+
+    const usageChunk = parseSSEData(await runPassthroughStream(raw))
+      .find((chunk) => chunk.usage);
+
+    expect(usageChunk.usage).toEqual(usage);
+  });
+
+  it("retains the buffer for provider-marked estimated usage", async () => {
+    const usage = {
+      prompt_tokens: 10,
+      completion_tokens: 2,
+      total_tokens: 12,
+      estimated: true,
+    };
+    const raw = [
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "ok" } }] })}`,
+      `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }], usage })}`,
+      "data: [DONE]",
+      "",
+    ].join("\n\n");
+
+    const usageChunk = parseSSEData(await runPassthroughStream(raw))
+      .find((chunk) => chunk.usage);
+
+    expect(usageChunk.usage).toEqual({
+      prompt_tokens: 2010,
+      completion_tokens: 2,
+      total_tokens: 2012,
+      estimated: true,
+    });
+  });
+});
+
+
+function parseSSEData(text) {
+  return text
+    .split("\n")
+    .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
+    .map((line) => JSON.parse(line.slice(6)));
+}
+
+describe("authoritative usage is not buffered for streaming responses", () => {
+  it("returns provider-reported Kiro usage unchanged in the translated terminal chunk", async () => {
+    const usage = { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12, kiro_credits: 0.5 };
+    const expectedUsage = { input_tokens: 10, output_tokens: 2 };
+    const raw = [
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "ok" } }] })}`,
+      `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }], usage })}`,
+      "data: [DONE]",
+      "",
+    ].join("\n\n");
+
+    const usageChunk = parseSSEData(await runTranslatedStream(raw, FORMATS.KIRO, FORMATS.CLAUDE))
+      .find((chunk) => chunk.usage);
+
+    expect(usageChunk.usage).toEqual(expectedUsage);
+  });
+  it("retains the buffer for provider-marked estimated usage after translation", async () => {
+    const raw = [
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "ok" } }] })}`,
+      `data: ${JSON.stringify({
+        choices: [{ delta: {}, finish_reason: "stop" }],
+        usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12, estimated: true },
+      })}`,
+      "data: [DONE]",
+      "",
+    ].join("\n\n");
+
+    const usageChunk = parseSSEData(await runTranslatedStream(raw, FORMATS.KIRO, FORMATS.CLAUDE))
+      .find((chunk) => chunk.usage);
+
+    expect(usageChunk.usage).toEqual({
+      input_tokens: 2010,
+      output_tokens: 2,
+      estimated: true,
+    });
+  });
+  it("buffers an estimated terminal usage chunk left in the line tail", async () => {
+    const raw = [
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "ok" } }] })}`,
+      `data: ${JSON.stringify({
+        choices: [{ delta: {}, finish_reason: "stop" }],
+        usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12, estimated: true },
+      })}`,
+    ].join("\n\n");
+
+    const usageChunk = parseSSEData(await runTranslatedStream(raw, FORMATS.KIRO, FORMATS.CLAUDE))
+      .find((chunk) => chunk.usage);
+
+    expect(usageChunk.usage).toEqual({
+      input_tokens: 2010,
+      output_tokens: 2,
+      estimated: true,
+    });
+  });
+});
 
 const chunk = (content, done = false) => JSON.stringify({
   model: "gpt-oss:120b",

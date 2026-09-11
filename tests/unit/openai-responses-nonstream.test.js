@@ -7,7 +7,8 @@ vi.mock("@/lib/usageDb.js", () => ({
 }));
 
 const { FORMATS } = await import("../../open-sse/translator/formats.js");
-const { translateNonStreamingResponse } = await import("../../open-sse/handlers/chatCore/nonStreamingHandler.js");
+const { translateNonStreamingResponse, handleNonStreamingResponse } = await import("../../open-sse/handlers/chatCore/nonStreamingHandler.js");
+const { estimateUsage } = await import("../../open-sse/utils/usageTracking.js");
 const { handleForcedSSEToJson } = await import("../../open-sse/handlers/chatCore/sseToJsonHandler.js");
 const { convertResponsesStreamToJson } = await import("../../open-sse/transformer/streamToJsonConverter.js");
 
@@ -96,6 +97,89 @@ describe("non-stream Chat upstream for a Responses-API client (op-ericding bug)"
     const out = translateNonStreamingResponse(CHAT_TOOL_BODY, FORMATS.OPENAI, FORMATS.OPENAI);
     expect(out.object).toBe("chat.completion");
     expect(out.choices[0].message.tool_calls[0].function.name).toBe("shell");
+  });
+});
+
+async function getNonStreamingUsage(usage, targetFormat = FORMATS.OPENAI, sourceFormat = FORMATS.OPENAI) {
+  const raw = [
+    `data: ${JSON.stringify({ choices: [{ delta: { content: "ok" }, finish_reason: "stop" }], usage })}`,
+    "data: [DONE]",
+    "",
+  ].join("\n");
+  const result = await handleNonStreamingResponse({
+    providerResponse: new Response(raw, { headers: { "content-type": "text/event-stream" } }),
+    provider: "kiro",
+    model: "claude-haiku-4.5",
+    sourceFormat,
+    targetFormat,
+    body: { model: "kiro/claude-haiku-4.5", messages: [] },
+    stream: false,
+    translatedBody: null,
+    finalBody: null,
+    requestStartTime: Date.now(),
+    connectionId: "conn-a",
+    apiKey: "key-a",
+    clientRawRequest: null,
+    reqLogger: {
+      logProviderResponse: vi.fn(),
+      logConvertedResponse: vi.fn(),
+    },
+    trackDone: vi.fn(),
+    appendLog: vi.fn(),
+  });
+
+  return (await result.response.json()).usage;
+}
+
+describe("non-stream provider usage handling", () => {
+  it("returns provider-reported Kiro usage unchanged", async () => {
+    const usage = { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12, kiro_credits: 0.5 };
+
+    await expect(getNonStreamingUsage(usage)).resolves.toEqual(usage);
+  });
+
+  it("retains the buffer for provider-marked estimated usage", async () => {
+    await expect(getNonStreamingUsage({
+      prompt_tokens: 10,
+      completion_tokens: 2,
+      total_tokens: 12,
+      estimated: true,
+    })).resolves.toEqual({
+      prompt_tokens: 2010,
+      completion_tokens: 2,
+      total_tokens: 2012,
+      estimated: true,
+    });
+  });
+
+  it("retains the buffer for provider-marked estimated usage after translation", async () => {
+    await expect(getNonStreamingUsage({
+      prompt_tokens: 10,
+      completion_tokens: 2,
+      total_tokens: 12,
+      estimated: true,
+    }, FORMATS.OPENAI, FORMATS.CLAUDE)).resolves.toEqual({
+      input_tokens: 2010,
+      output_tokens: 2,
+      estimated: true,
+    });
+  });
+});
+
+
+describe("estimated usage retains the context buffer", () => {
+  it("buffers estimates while authoritative usage stays exact", () => {
+    expect(estimateUsage({ a: 1 }, 8, FORMATS.OPENAI)).toEqual({
+      prompt_tokens: 2002,
+      completion_tokens: 2,
+      total_tokens: 2004,
+      estimated: true,
+    });
+    expect(estimateUsage({ a: 1 }, 8, FORMATS.CLAUDE)).toEqual({
+      input_tokens: 2002,
+      output_tokens: 2,
+      estimated: true,
+    });
   });
 });
 
