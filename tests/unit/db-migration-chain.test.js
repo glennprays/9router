@@ -85,6 +85,27 @@ describe("Schema migrations", () => {
     expect(aliases).toHaveLength(1);
   });
 
+  it("backfills legacy current-month Kiro usage without throwing", async () => {
+    fs.writeFileSync(path.join(tempDir, "db.json"), JSON.stringify({
+      apiKeys: [{ id: "k1", key: "legacy-key", name: "legacy", createdAt: new Date().toISOString() }],
+    }));
+    fs.writeFileSync(path.join(tempDir, "usage.json"), JSON.stringify({
+      history: [{
+        timestamp: new Date().toISOString(),
+        provider: "kiro",
+        model: "claude-haiku",
+        apiKey: "legacy-key",
+        tokens: { prompt_tokens: 12, completion_tokens: 3, kiro_credits: 1.25 },
+      }],
+    }));
+
+    const { getAdapter } = await import("@/lib/db/driver.js");
+    const db = await getAdapter();
+
+    expect(db.get("SELECT key, inputTokens, outputTokens, credits FROM apiKeyUsage WHERE key = ?", ["legacy-key"]))
+      .toMatchObject({ key: "legacy-key", inputTokens: 12, outputTokens: 3, credits: 1.25 });
+  });
+
   it("auto-sync re-creates missing index when DB lacks it", async () => {
     const { getAdapter } = await import("@/lib/db/driver.js");
     const db = await getAdapter();

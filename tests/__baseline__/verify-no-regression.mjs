@@ -8,13 +8,23 @@ const knownFails = new Set(
     .split("\n").map(s => s.trim()).filter(Boolean)
 );
 
+function normalizeTestPath(testPath) {
+  const normalized = String(testPath).replaceAll("\\", "/");
+  const testsMarker = "/tests/";
+  const testsIndex = normalized.lastIndexOf(testsMarker);
+  if (testsIndex >= 0) return normalized.slice(testsIndex + 1);
+  const appMarker = "/app/";
+  const appIndex = normalized.lastIndexOf(appMarker);
+  return appIndex >= 0 ? normalized.slice(appIndex + 1) : normalized;
+}
+
 const resultsPath = process.argv[2];
 if (!resultsPath) { console.error("Missing results.json path"); process.exit(2); }
 
 const r = JSON.parse(readFileSync(resultsPath, "utf8"));
 const nowFails = r.testResults.flatMap(f =>
   f.assertionResults.filter(a => a.status === "failed")
-    .map(a => f.name.split("/app/")[1] + " :: " + a.fullName)
+    .map(a => `${normalizeTestPath(f.name)} :: ${a.fullName}`)
 );
 
 // Regression = fail bây giờ NHƯNG không có trong baseline known-fails
