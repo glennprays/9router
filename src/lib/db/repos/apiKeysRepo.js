@@ -122,13 +122,22 @@ export async function getApiKeysWithUsage() {
 export async function rotateApiKey(id) {
   const db = await getAdapter();
   const { generateApiKeyWithMachine } = await import("@/shared/utils/apiKey");
+  const row = db.get(`SELECT id, key, machineId FROM apiKeys WHERE id = ?`, [id]);
+  if (!row) return null;
+  // Rows imported from legacy db.json carry machineId NULL; embedding "null" in the
+  // secret would still pass the CRC check but is not a real machine-bound key.
+  let machineId = row.machineId;
+  if (!machineId) {
+    const { getConsistentMachineId } = await import("@/shared/utils/machineId");
+    machineId = await getConsistentMachineId();
+  }
   let result = null;
   db.transaction(() => {
-    const row = db.get(`SELECT id, key, machineId FROM apiKeys WHERE id = ?`, [id]);
-    if (!row) return;
-    const { key: newKey } = generateApiKeyWithMachine(row.machineId);
-    db.run(`UPDATE apiKeys SET key = ? WHERE id = ?`, [newKey, id]);
-    db.run(`UPDATE apiKeyUsage SET key = ? WHERE key = ?`, [newKey, row.key]);
+    const current = db.get(`SELECT key FROM apiKeys WHERE id = ?`, [id]);
+    if (!current) return;
+    const { key: newKey } = generateApiKeyWithMachine(machineId);
+    db.run(`UPDATE apiKeys SET key = ?, machineId = ? WHERE id = ?`, [newKey, machineId, id]);
+    db.run(`UPDATE apiKeyUsage SET key = ? WHERE key = ?`, [newKey, current.key]);
     result = { id, key: newKey };
   });
   return result;

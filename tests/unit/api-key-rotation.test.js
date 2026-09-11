@@ -20,6 +20,10 @@ vi.mock("next/server", () => ({
   },
 }));
 
+vi.mock("@/shared/utils/machineId", () => ({
+  getConsistentMachineId: vi.fn(async () => "fallbackmachine1"),
+}));
+
 import { createSqlJsAdapter } from "../../src/lib/db/adapters/sqljsAdapter.js";
 import { TABLES, buildCreateTableSql } from "../../src/lib/db/schema.js";
 import {
@@ -143,6 +147,16 @@ describe("rotateApiKey", () => {
     expect((await getApiKeyById(oldKey.id)).key).toBe(oldKey.key);
     expect(await validateApiKey(oldKey.key)).toBe(true);
     expect(state.db.get("SELECT key FROM apiKeyUsage WHERE periodKey = '2026-09'").key).toBe(oldKey.key);
+  });
+
+  it("derives a machine id for legacy rows that have none instead of minting sk-null keys", async () => {
+    const legacy = seedKey({ machineId: null });
+
+    const result = await rotateApiKey(legacy.id);
+
+    expect(result.key).toMatch(/^sk-fallbackmachine1-/);
+    expect(await validateApiKey(result.key)).toBe(true);
+    expect(await getApiKeyById(legacy.id)).toMatchObject({ key: result.key, machineId: "fallbackmachine1" });
   });
 
   it("returns null for an unknown id", async () => {
