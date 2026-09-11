@@ -483,3 +483,22 @@ $ cd tests && npx vitest run unit/external-update-mode.test.js unit/github-deplo
 The earlier API smoke excerpts above show the pre-hardening external 409 wording; the latest focused test validates the revised operator direction. The API/browser smoke was not rerun because the requested command allowance for this pass was limited to shell syntax and the two focused test files.
 
 This rerun includes the updated external-mode 409 direction assertion and deployment source guards. It does not supersede the earlier build/API/browser evidence above, and no Linux/systemd lifecycle is claimed. Account/group creation, managed-path ownership, exact fixed-unit installation, stop-state confirmation, database rollback replacement, stable-release retention, and failed first-install cleanup remain Linux-only deferrals.
+
+## Deployment edge-case completion evidence
+
+Commands run exactly:
+
+```text
+$ bash -n deploy/github-deploy.sh
+(no output; exit 0)
+
+$ cd tests && npx vitest run unit/external-update-mode.test.js unit/github-deploy-script.test.js
+ RUN  v4.1.11 /Users/glennpray/projects/9router/tests
+
+ Test Files  2 passed (2)
+      Tests  19 passed (19)
+```
+
+The focused assertions now include setup ordering, regular-unit cleanup, confirmed-stop and database-directory safety, release/failed-artifact retention, fixed-unit validation, external 409 guidance, and JSON health-loop requirements. No formatter, linter, project-wide suite, or real lifecycle command was run.
+
+Linux-only deferrals: root/systemd lifecycle and stop-state failure injection; service-account/group and runuser transitions; exact-tag GitHub fetch/build; fixed-unit installation; database backup/restore and atomic symlink switching; retention and first-install rollback failures; and VPS health verification.

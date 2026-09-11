@@ -9,7 +9,7 @@ export async function startUpdateForMode({ env = process.env, startNpmUpdate }) 
       {
         success: false,
         message:
-          "Updates are managed externally. Download the reviewed tag-pinned deployment script from GitHub and run update --tag <tag>.",
+          "Updates are managed externally. Download and review the tag-pinned deployment script deploy/github-deploy.sh from GitHub, then run update --tag <tag>.",
       },
       { status: 409 }
     );

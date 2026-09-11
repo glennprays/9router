@@ -7,7 +7,10 @@ import { describe, expect, it } from "vitest";
 const run = promisify(execFile);
 const script = path.resolve(process.cwd(), "../deploy/github-deploy.sh");
 const scriptSource = readFileSync(script, "utf8");
-
+const runbookSource = readFileSync(
+  path.resolve(process.cwd(), "../docs/GITHUB-SOURCE-VPS.md"),
+  "utf8",
+);
 describe("GitHub deployment script arguments", () => {
   it("prints help without requiring root", async () => {
     const { stdout } = await run("bash", [script, "--help"]);
@@ -78,5 +81,38 @@ describe("GitHub deployment script arguments", () => {
     expect(scriptSource).toContain("readonly HEALTH_TIMEOUT_MS=30000");
     expect(scriptSource).not.toContain("SECONDS");
     expect(scriptSource).toContain("if (( remaining_ms < 1000 ));");
+  });
+  it("guards rollback data and preserves stable/failed release artifacts", () => {
+    const installStart = scriptSource.indexOf("install_release() {");
+    const setup = scriptSource.indexOf("ensure_account_and_directories", installStart);
+    const environment = scriptSource.indexOf("ensure_environment", setup);
+    const databaseCapture = scriptSource.indexOf("capture_database_state", environment);
+    expect(setup).toBeGreaterThan(installStart);
+    expect(environment).toBeGreaterThan(setup);
+    expect(databaseCapture).toBeGreaterThan(environment);
+    const rollbackStart = scriptSource.indexOf("rollback_update() {");
+    const rollbackStop = scriptSource.indexOf("stop_service_confirmed", rollbackStart);
+    const rollbackDatabase = scriptSource.indexOf("restore_database", rollbackStart);
+    expect(rollbackStop).toBeGreaterThan(rollbackStart);
+    expect(rollbackDatabase).toBeGreaterThan(rollbackStop);
+    expect(scriptSource).toContain('if stop_service_confirmed && [[ "$stop_confirmation_failed" -eq 0 ]]');
+    expect(scriptSource).toContain('[[ "$stop_confirmed" -eq 1 && "$stop_confirmation_failed" -eq 0');
+    expect(scriptSource).toContain('final_release="$RELEASES_DIR/$tag"');
+    expect(scriptSource).toContain('failed_target="$RELEASES_DIR/${tag}.failed-');
+    expect(scriptSource).toContain('stop_ok=1');
+    expect(scriptSource).toContain("remove_installed_unit");
+    expect(scriptSource).toContain('"$CMP_BIN"');
+    expect(scriptSource).toContain("--user-group");
+    expect(scriptSource).toContain('"$CHOWN_BIN" root:root "$DEPLOY_ROOT"');
+    expect(scriptSource).toContain('"$CHOWN_BIN" 9router:9router "$DATABASE_DIR"');
+    expect(scriptSource).toContain('"$CHMOD_BIN" 0750 "$DATABASE_DIR"');
+    expect(scriptSource).toContain('"$CHMOD_BIN" 0700 "$RUNTIME_DIR" "$BACKUP_DIR"');
+    expect(scriptSource).toContain('expected_service_unit > "$expected"');
+    expect(scriptSource).toContain('"$INSTALL_BIN" -o root -g root -m 0644 "$expected"');
+    expect(scriptSource).toContain("retain_backups");
+    expect((runbookSource.match(/health_json=/g) || [])).toHaveLength(3);
+    expect((runbookSource.match(/\/usr\/bin\/node -e/g) || [])).toHaveLength(3);
+    expect(runbookSource).toContain("value.ok === true");
+    expect(runbookSource).toContain("/opt/9router/releases/${GOOD_TAG}");
   });
 });

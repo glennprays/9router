@@ -133,6 +133,7 @@ describe("external update mode", () => {
     expect(response.status).toBe(409);
     const body = await response.json();
     expect(body.message).toContain("tag-pinned deployment script");
+    expect(body.message).toContain("deploy/github-deploy.sh");
     expect(body.message).toContain("update --tag");
     expect(startNpmUpdate).not.toHaveBeenCalled();
   });

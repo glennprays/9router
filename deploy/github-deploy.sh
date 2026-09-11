@@ -34,6 +34,7 @@ readonly CHOWN_BIN="/usr/bin/chown"
 readonly CHMOD_BIN="/usr/bin/chmod"
 readonly ENV_BIN="/usr/bin/env"
 readonly CAT_BIN="/bin/cat"
+readonly INSTALL_BIN="/usr/bin/install"
 readonly RMDIR_BIN="/usr/bin/rmdir"
 readonly DATE_BIN="/usr/bin/date"
 readonly SLEEP_BIN="/usr/bin/sleep"
@@ -44,6 +45,7 @@ readonly STAGING_DIR="$UPDATE_DIR/staging"
 readonly LOCK_DIR="$UPDATE_DIR/deploy.lock"
 readonly CURRENT_LINK="$DEPLOY_ROOT/current"
 readonly CURRENT_NEW_LINK="$DEPLOY_ROOT/current.new"
+readonly RUNTIME_DIR="$DATA_ROOT/runtime"
 readonly DATABASE_DIR="$DATA_ROOT/db"
 readonly DATABASE_FILE="$DATABASE_DIR/data.sqlite"
 readonly BACKUP_DIR="$DATA_ROOT/backups"
@@ -71,7 +73,9 @@ candidate_dir=""
 current_tag=""
 stop_confirmation_failed=0
 previous_target=""
+previous_tag=""
 backup_path=""
+database_existed_before=0
 NPM_HOME=""
 NPM_CACHE=""
 npm_home=""
@@ -276,26 +280,28 @@ preserve_failed_release() {
 }
 
 rollback_update() {
-  local rollback_failed=0
+  local rollback_failed=0 stop_ok=0
   phase="rollback"
   rollback_attempted=1
-  # Database mutation is strictly after a successful stop and fail-closed state query.
-  if ! stop_service_confirmed; then
+  # Database mutation and service restart require a successful stop plus a
+  # confirmed inactive/failed state. Unknown service state is fail-closed.
+  if stop_service_confirmed && [[ "$stop_confirmation_failed" -eq 0 ]]; then
+    stop_ok=1
+  else
     rollback_failed=1
   fi
-  [[ "$stop_confirmation_failed" -eq 0 ]] || rollback_failed=1
-  if ! safe_remove_symlink "$CURRENT_NEW_LINK"; then rollback_failed=1; fi
-  if [[ -n "$previous_target" && -d "$previous_target" && ! -L "$previous_target" ]]; then
+  safe_remove_symlink "$CURRENT_NEW_LINK" || rollback_failed=1
+  if [[ "$stop_ok" -eq 1 && -n "$previous_target" && -d "$previous_target" && ! -L "$previous_target" ]]; then
     if ! "$LN_BIN" -s -- "$previous_target" "$CURRENT_NEW_LINK" || ! "$MV_BIN" -Tf -- "$CURRENT_NEW_LINK" "$CURRENT_LINK"; then
       rollback_failed=1
     else
       current_switched=0
       current_tag="$previous_tag"
     fi
-  else
+  elif [[ "$stop_ok" -eq 1 ]]; then
     rollback_failed=1
   fi
-  if [[ "$stop_confirmed" -eq 1 && "$stop_confirmation_failed" -eq 0 && "$database_state_known" -eq 1 ]]; then
+  if [[ "$stop_ok" -eq 1 && "$database_state_known" -eq 1 ]]; then
     if [[ "$backup_ready" -eq 1 ]]; then
       restore_database || rollback_failed=1
     elif [[ "$database_existed_before" -eq 0 ]]; then
@@ -303,7 +309,7 @@ rollback_update() {
     fi
   fi
   # Never claim a restart when stop was not confirmed.
-  if [[ "$stop_confirmed" -eq 1 && "$stop_confirmation_failed" -eq 0 ]]; then
+  if [[ "$stop_ok" -eq 1 ]]; then
     "$SYSTEMCTL_BIN" start "$SERVICE_NAME" >/dev/null 2>&1 || rollback_failed=1
   fi
   transaction_active=0
@@ -312,12 +318,14 @@ rollback_update() {
 }
 
 rollback_first_install() {
-  local rollback_failed=0
+  local rollback_failed=0 stop_ok=0
   phase="rollback"
   rollback_attempted=1
   # Stop and confirm before deleting a database created by a failed first install.
-  if [[ "$unit_installed" -eq 1 || "$service_enabled" -eq 1 ]]; then
-    if ! stop_service_confirmed; then rollback_failed=1; fi
+  if [[ "$service_enabled" -eq 1 ]]; then
+    if stop_service_confirmed && [[ "$stop_confirmation_failed" -eq 0 ]]; then stop_ok=1; else rollback_failed=1; fi
+  else
+    stop_ok=1
   fi
   if [[ "$unit_installed" -eq 1 || "$service_enabled" -eq 1 ]]; then
     "$SYSTEMCTL_BIN" disable "$SERVICE_NAME" >/dev/null 2>&1 || rollback_failed=1
@@ -325,8 +333,12 @@ rollback_first_install() {
     "$SYSTEMCTL_BIN" daemon-reload >/dev/null 2>&1 || rollback_failed=1
   fi
   if [[ "$current_switched" -eq 1 ]]; then
-    safe_remove_symlink "$CURRENT_LINK" || rollback_failed=1
-    current_tag=""
+    if [[ "$stop_ok" -eq 1 ]]; then
+      safe_remove_symlink "$CURRENT_LINK" || rollback_failed=1
+      current_tag=""
+    else
+      rollback_failed=1
+    fi
   fi
   if [[ "$stop_confirmed" -eq 1 && "$stop_confirmation_failed" -eq 0 && "$database_state_known" -eq 1 && "$database_existed_before" -eq 0 ]]; then
     remove_new_database || rollback_failed=1
@@ -335,6 +347,7 @@ rollback_first_install() {
   if [[ "$rollback_failed" -eq 1 ]]; then failure_code="rollback-failed"; fi
   return "$rollback_failed"
 }
+
 
 on_exit() {
   local exit_code=$? original_failure rollback_result
@@ -383,7 +396,11 @@ enforce_environment_assignment() {
 
 ensure_account() {
   if ! "$ID_BIN" -u 9router >/dev/null 2>&1; then
-    "$USERADD_BIN" --system --user-group --home-dir "$DATA_ROOT" --shell /usr/sbin/nologin 9router || fail "account-creation-failed"
+    if "$GETENT_BIN" group 9router >/dev/null 2>&1; then
+      "$USERADD_BIN" --system --gid 9router --home-dir "$DATA_ROOT" --shell /usr/sbin/nologin 9router || fail "account-creation-failed"
+    else
+      "$USERADD_BIN" --system --user-group --home-dir "$DATA_ROOT" --shell /usr/sbin/nologin 9router || fail "account-creation-failed"
+    fi
   fi
   if ! "$GETENT_BIN" group 9router >/dev/null 2>&1; then
     "$GROUPADD_BIN" --system 9router || fail "group-creation-failed"
@@ -398,24 +415,27 @@ ensure_account() {
 validate_managed_tree() {
   local path
   for path in /opt /opt/9router /opt/9router/releases /opt/9router/update /opt/9router/update/staging \
-    /var /var/lib /var/lib/9router /var/lib/9router/db /var/lib/9router/backups \
+    /var /var/lib /var/lib/9router /var/lib/9router/runtime /var/lib/9router/db /var/lib/9router/backups \
     /etc /etc/9router /etc/systemd /etc/systemd/system; do
     validate_directory_entry "$path"
   done
 }
 
 ensure_directory_tree() {
-  # Every ancestor is checked in order before any mkdir/chown/chmod operation.
+  # Check each ancestor immediately before creating or changing its child.
   local path
-  validate_managed_tree
-  for path in "$DEPLOY_ROOT" "$RELEASES_DIR" "$UPDATE_DIR" "$STAGING_DIR" "$DATA_ROOT" "$DATABASE_DIR" "$BACKUP_DIR" /etc/9router; do
+  for path in /opt /opt/9router "$RELEASES_DIR" "$UPDATE_DIR" "$STAGING_DIR" \
+    /var /var/lib "$DATA_ROOT" "$RUNTIME_DIR" "$DATABASE_DIR" "$BACKUP_DIR" \
+    /etc /etc/9router; do
+    validate_directory_entry "$path"
     if [[ ! -e "$path" ]]; then "$MKDIR_BIN" "$path"; fi
+    validate_directory_entry "$path"
   done
-  "$CHOWN_BIN" root:root "$DEPLOY_ROOT" "$RELEASES_DIR" "$DATA_ROOT" "$BACKUP_DIR" /etc/9router
-  "$CHOWN_BIN" root:9router "$UPDATE_DIR" "$STAGING_DIR"
+  "$CHOWN_BIN" root:root "$DEPLOY_ROOT" "$RELEASES_DIR" "$UPDATE_DIR" "$STAGING_DIR" \
+    "$DATA_ROOT" "$RUNTIME_DIR" "$BACKUP_DIR" /etc/9router
   "$CHMOD_BIN" 0755 "$DEPLOY_ROOT" "$RELEASES_DIR" "$DATA_ROOT" /etc/9router
-  "$CHMOD_BIN" 0710 "$UPDATE_DIR" "$STAGING_DIR"
-  "$CHMOD_BIN" 0700 "$BACKUP_DIR"
+  "$CHMOD_BIN" 0755 "$UPDATE_DIR" "$STAGING_DIR"
+  "$CHMOD_BIN" 0700 "$RUNTIME_DIR" "$BACKUP_DIR"
   "$CHOWN_BIN" 9router:9router "$DATABASE_DIR"
   "$CHMOD_BIN" 0750 "$DATABASE_DIR"
 }
@@ -578,6 +598,8 @@ done
 
 retain_backups() {
   local backup name
+  [[ -n "$backup_path" ]] || return 0
+  validate_directory_entry "$BACKUP_DIR" || return 1
   for backup in "$BACKUP_DIR"/*.sqlite; do
     [[ -f "$backup" && ! -L "$backup" ]] || continue
     [[ "$backup" == "$backup_path" ]] && continue
@@ -599,6 +621,9 @@ reject_existing_install() {
 }
 
 install_release() {
+  ensure_account_and_directories
+  ensure_environment
+  reject_existing_install
   capture_database_state
   clone_and_build; validate_service_unit; promote_candidate
   transaction_active=1; phase="service-install"
@@ -626,7 +651,7 @@ update_release() {
   phase="stop-service"; transaction_active=1
   capture_database_state
   stop_service_confirmed || fail "service-stop-failed"
-  phase="backup"; validate_database_after_stop
+  phase="backup"; validate_database_after_stop || fail "database-backup-failed"; validate_directory_entry "$BACKUP_DIR" || fail "database-backup-failed"
   backup_path="$BACKUP_DIR/$($DATE_BIN -u +%Y%m%dT%H%M%SZ)-${tag}.sqlite"
   if [[ "$database_existed_before" -eq 1 ]]; then
     [[ -f "$DATABASE_FILE" && ! -L "$DATABASE_FILE" ]] || fail "database-backup-failed"

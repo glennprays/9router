@@ -174,3 +174,22 @@ The external-mode assertion now verifies the HTTP 409 directs operators to the r
 ### Linux-only deferrals
 
 No root/systemd lifecycle was attempted on macOS. VPS verification of account/group transitions, directory ownership, exact-tag fetch/build, service-unit installation, stop-state behavior, atomic database restoration, retention failure rollback, and first-install transaction cleanup remains deferred to a disposable Linux host.
+
+## Deployment edge-case completion evidence
+
+Commands run for this implementation:
+
+```text
+$ bash -n deploy/github-deploy.sh
+(no output; exit 0)
+
+$ cd tests && npx vitest run unit/external-update-mode.test.js unit/github-deploy-script.test.js
+ RUN  v4.1.11 /Users/glennpray/projects/9router/tests
+
+ Test Files  2 passed (2)
+      Tests  19 passed (19)
+```
+
+Focused source assertions cover setup-before-database-capture ordering, regular-unit cleanup, confirmed-stop database guards, writable service-owned database directory, root-owned runtime/backup/deployment parents, stable and failed release naming/preservation, fixed-unit comparison/install content, external route guidance, and all three runbook JSON health loops.
+
+Linux-only deferrals remain: root/systemd lifecycle, stop-state failure injection, account/group transitions, runuser ownership, exact-tag fetch/build, fixed-unit installation, no-follow database replacement, atomic symlink rollback, retention failure rollback, and first-install cleanup on a disposable Linux host.
