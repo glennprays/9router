@@ -5,7 +5,7 @@ import {
   extractApiKey,
   isValidApiKey,
 } from "../services/auth.js";
-import { getSettings } from "@/lib/localDb";
+import { getSettings, getApiKeyPolicyByKey } from "@/lib/localDb";
 import { getModelInfo } from "../services/model.js";
 import { handleEmbeddingsCore } from "open-sse/handlers/embeddingsCore.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
@@ -13,7 +13,7 @@ import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { saveRequestUsage } from "@/lib/usageDb.js";
-
+import { resolveBudgetContext } from "../limits/budget.js";
 function exactEmbeddingUsage(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw) || raw.estimated === true) return null;
   const promptTokens = raw.prompt_tokens ?? raw.input_tokens;
@@ -65,6 +65,11 @@ export async function handleEmbeddings(request) {
     }
   }
 
+  const apiKeyPolicy = apiKey ? await getApiKeyPolicyByKey(apiKey) : null;
+  const apiKeyId = apiKeyPolicy?.isActive === true || apiKeyPolicy?.isActive === 1
+    ? apiKeyPolicy.id
+    : null;
+
   if (!modelStr) {
     log.warn("EMBEDDINGS", "Missing model");
     return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
@@ -82,6 +87,16 @@ export async function handleEmbeddings(request) {
   }
 
   const { provider, model } = modelInfo;
+  const budget = await resolveBudgetContext({
+    apiKey,
+    apiKeyId,
+    memberPolicy: apiKeyPolicy,
+    provider,
+    model,
+    body,
+    hasOutput: false,
+  });
+  if (budget?.reject) return budget.reject;
 
   if (modelStr !== `${provider}/${model}`) {
     log.info("ROUTING", `${modelStr} → ${provider}/${model}`);
@@ -89,8 +104,9 @@ export async function handleEmbeddings(request) {
     log.info("ROUTING", `Provider: ${provider}, Model: ${model}`);
   }
 
-  // Credential + fallback loop (mirrors handleChat)
-  const excludeConnectionIds = new Set();
+  // Budget admission can exclude exhausted Kiro accounts before credential
+  // selection. Preserve those exclusions for the fallback loop.
+  const excludeConnectionIds = new Set(budget?.excludeConnectionIds || []);
   let lastError = null;
   let lastStatus = null;
 
@@ -142,6 +158,7 @@ export async function handleEmbeddings(request) {
           model,
           connectionId: credentials.connectionId,
           apiKey,
+          apiKeyId,
           endpoint: url.pathname,
           tokens: usage,
           status: "success",

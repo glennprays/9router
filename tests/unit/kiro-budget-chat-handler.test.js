@@ -28,7 +28,7 @@ vi.mock("@/sse/services/auth.js", () => ({
 vi.mock("@/lib/localDb", () => ({
   getSettings: mocks.getSettings,
   getApiKeyPolicyByKey: vi.fn(),
-  getApiKeyUsage: vi.fn(),
+  getApiKeyProviderBudgets: vi.fn(),
   getKiroCreditRate: vi.fn(),
   getTeamBudgetPolicy: vi.fn(),
   getTeamUsage: vi.fn(),
@@ -67,7 +67,7 @@ vi.mock("@/sse/utils/logger.js", () => ({
 }));
 // Only the admission decisions are stubbed; the response helpers stay real so the
 // assertions below pin the wire contract, not a mock's copy of it.
-vi.mock("@/sse/limits/kiroBudget.js", async (importOriginal) => ({
+vi.mock("@/sse/limits/budget.js", async (importOriginal) => ({
   ...(await importOriginal()),
   resolveBudgetContext: mocks.resolveBudgetContext,
   resolveAccountOutputCap: mocks.resolveAccountOutputCap,
@@ -111,6 +111,20 @@ beforeEach(() => {
 });
 
 describe("Kiro account budget fallback", () => {
+  it("rejects an invalid caller key when API-key enforcement is enabled", async () => {
+    mocks.getSettings.mockResolvedValue({ requireApiKey: true });
+    mocks.extractApiKey.mockReturnValue("invalid-caller-key");
+    mocks.isValidApiKey.mockResolvedValue(false);
+
+    const response = await handleChat(kiroRequest());
+
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { message: "Invalid API key" },
+    });
+    expect(mocks.resolveBudgetContext).not.toHaveBeenCalled();
+  });
+
   it("returns insufficient_quota when every active account is skipped for output capacity", async () => {
     mocks.resolveAccountOutputCap.mockReturnValue({ skip: true, cap: null });
     mocks.getProviderCredentials

@@ -8,7 +8,7 @@ import {
   isValidApiKey,
 } from "../services/auth.js";
 import { handleAntigravityQuotaError, clearAntigravityStrikes } from "../services/antigravityQuota.js";
-import { getSettings } from "@/lib/localDb";
+import { getSettings, getApiKeyPolicyByKey } from "@/lib/localDb";
 import { getModelInfo, getComboModels } from "../services/model.js";
 import { handleChatCore } from "open-sse/handlers/chatCore.js";
 import { DEFAULT_HEADROOM_URL } from "@/lib/headroom/detect";
@@ -24,7 +24,7 @@ import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
 import { stripModelContextMarker } from "open-sse/utils/modelMarkers.js";
-import { resolveBudgetContext, resolveAccountOutputCap, clampOutputTokens, quotaExceededResponse } from "../limits/kiroBudget.js";
+import { resolveBudgetContext, resolveAccountOutputCap, clampOutputTokens, quotaExceededResponse } from "../limits/budget.js";
 
 /**
  * Handle chat completion request
@@ -80,6 +80,10 @@ export async function handleChat(request, clientRawRequest = null) {
       return errorResponse(HTTP_STATUS.UNAUTHORIZED, "Invalid API key");
     }
   }
+  const apiKeyPolicy = apiKey ? await getApiKeyPolicyByKey(apiKey) : null;
+  const apiKeyId = apiKeyPolicy?.isActive === true || apiKeyPolicy?.isActive === 1
+    ? apiKeyPolicy.id
+    : null;
 
   if (!modelStr) {
     log.warn("CHAT", "Missing model");
@@ -114,7 +118,7 @@ export async function handleChat(request, clientRawRequest = null) {
             const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
             cleanRawReq = { ...clientRawRequest, body: cleanBody };
           }
-          return handleSingleModelChat(b, m, cleanRawReq, request, apiKey);
+          return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, apiKeyId, apiKeyPolicy);
         },
         log,
         comboName: modelStr,
@@ -129,7 +133,7 @@ export async function handleChat(request, clientRawRequest = null) {
       body,
       models: augmentedModels,
       handleSingleModel: withCapacityAdapterStripping(
-        (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+        (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, apiKeyId, apiKeyPolicy),
         adapterAdded
       ),
       log,
@@ -149,7 +153,7 @@ export async function handleChat(request, clientRawRequest = null) {
       body,
       models: soloAugmented,
       handleSingleModel: withCapacityAdapterStripping(
-        (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+        (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, apiKeyId, apiKeyPolicy),
         adapterAdded
       ),
       log,
@@ -158,13 +162,13 @@ export async function handleChat(request, clientRawRequest = null) {
     });
   }
 
-  return handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey);
+  return handleSingleModelChat(body, modelStr, clientRawRequest, request, apiKey, apiKeyId, apiKeyPolicy);
 }
 
 /**
  * Handle single model chat request
  */
-async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null) {
+async function handleSingleModelChat(body, modelStr, clientRawRequest = null, request = null, apiKey = null, apiKeyId = null, memberPolicy = null) {
   const modelInfo = await getModelInfo(modelStr);
 
   // If provider is null, this might be a combo name - check and handle
@@ -191,7 +195,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
               const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
               cleanRawReq = { ...clientRawRequest, body: cleanBody };
             }
-            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey);
+            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey, apiKeyId, memberPolicy);
           },
           log,
           comboName: modelStr,
@@ -206,7 +210,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         body,
         models: augmentedModels,
         handleSingleModel: withCapacityAdapterStripping(
-          (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey),
+          (b, m) => handleSingleModelChat(b, m, clientRawRequest, request, apiKey, apiKeyId, memberPolicy),
           adapterAdded
         ),
         log,
@@ -221,15 +225,20 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
 
   const { provider, model } = modelInfo;
 
-  let budget = null;
-  if (provider === "kiro") {
-    budget = await resolveBudgetContext({ apiKey, provider, model, body });
-    if (budget?.reject) {
-      log.warn("LIMIT", `Kiro budget blocked: insufficient_quota (${provider}/${model})`);
-      return budget.reject;
-    }
-    if (budget?.outputCap != null) body = clampOutputTokens(body, budget.outputCap);
+  const budget = await resolveBudgetContext({
+    apiKey,
+    apiKeyId,
+    memberPolicy,
+    provider,
+    model,
+    body,
+    hasOutput: true,
+  });
+  if (budget?.reject) {
+    log.warn("LIMIT", `Budget blocked: insufficient_quota (${provider}/${model})`);
+    return budget.reject;
   }
+  if (budget?.outputCap != null) body = clampOutputTokens(body, budget.outputCap);
 
   // Routing shown in the unified "▶" line (client model → provider/model)
 
@@ -300,7 +309,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       modelInfo: { provider, model },
       credentials: refreshedCredentials,
       log,
-      clientRawRequest,
+      apiKeyId,
       connectionId: credentials.connectionId,
       userAgent,
       apiKey,

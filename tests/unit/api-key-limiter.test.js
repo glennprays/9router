@@ -7,7 +7,7 @@ const state = vi.hoisted(() => ({
   db: null,
   policy: null,
   usage: { inputTokens: 0, outputTokens: 0, credits: 0 },
-  teamPolicy: null,
+  providerBudgets: [],
   teamUsage: { inputTokens: 0, outputTokens: 0, credits: 0 },
   accountBudgets: new Map(),
   accountUsage: new Map(),
@@ -22,7 +22,8 @@ vi.mock("../../src/lib/db/driver.js", () => ({
 
 vi.mock("@/lib/localDb", () => ({
   getApiKeyPolicyByKey: vi.fn(async () => state.policy),
-  getApiKeyUsage: vi.fn(async () => ({ key: "k1", periodKey: "2026-09", ...state.usage })),
+  getApiKeyUsage: vi.fn(async () => ({ apiKeyId: "id-1", periodKey: "2026-09", ...state.usage })),
+  getApiKeyProviderBudgets: vi.fn(async () => state.providerBudgets),
   getKiroCreditRate: vi.fn(async () => state.rate),
   getTeamBudgetPolicy: vi.fn(async () => state.teamPolicy),
   getTeamUsage: vi.fn(async () => ({ periodKey: "2026-09", ...state.teamUsage })),
@@ -51,7 +52,7 @@ import {
   clampOutputTokens,
   resolveAccountOutputCap,
   resolveBudgetContext,
-} from "../../src/sse/limits/kiroBudget.js";
+} from "../../src/sse/limits/budget.js";
 import { saveUsageStats } from "../../open-sse/handlers/chatCore/requestDetail.js";
 
 let tempDbPath;
@@ -68,7 +69,7 @@ async function makeDb(tableNames) {
 }
 
 beforeEach(() => {
-  state.policy = null;
+  state.providerBudgets = [];
   state.usage = { inputTokens: 0, outputTokens: 0, credits: 0 };
   state.teamPolicy = null;
   state.teamUsage = { inputTokens: 0, outputTokens: 0, credits: 0 };
@@ -102,36 +103,48 @@ describe("API key usage persistence", () => {
     state.db = await makeDb(["apiKeyUsage"]);
 
     upsertApiKeyUsage(state.db, {
-      key: "k1", periodKey: "2026-09", inputTokens: 100, outputTokens: 50, credits: 0.5,
+      apiKeyId: "id-1", periodKey: "2026-09", inputTokens: 100, outputTokens: 50, credits: 0.5,
     });
     upsertApiKeyUsage(state.db, {
-      key: "k1", periodKey: "2026-09", inputTokens: 100, outputTokens: 50, credits: 0.5,
+      apiKeyId: "id-1", periodKey: "2026-09", inputTokens: 100, outputTokens: 50, credits: 0.5,
     });
     upsertApiKeyUsage(state.db, {
-      key: "k1", periodKey: "2026-10", inputTokens: 7, outputTokens: 8, credits: 0.25,
+      apiKeyId: "id-1", periodKey: "2026-10", inputTokens: 7, outputTokens: 8, credits: 0.25,
     });
 
-    await expect(getApiKeyUsage("k1", "2026-09")).resolves.toEqual({
-      key: "k1", periodKey: "2026-09", inputTokens: 200, outputTokens: 100, credits: 1,
+    await expect(getApiKeyUsage("id-1", "2026-09")).resolves.toEqual({
+      apiKeyId: "id-1", periodKey: "2026-09", inputTokens: 200, outputTokens: 100, credits: 1,
     });
-    await expect(getApiKeyUsage("k1", "2026-10")).resolves.toEqual({
-      key: "k1", periodKey: "2026-10", inputTokens: 7, outputTokens: 8, credits: 0.25,
+    await expect(getApiKeyUsage("id-1", "2026-10")).resolves.toEqual({
+      apiKeyId: "id-1", periodKey: "2026-10", inputTokens: 7, outputTokens: 8, credits: 0.25,
     });
   });
 });
 
 describe("API key budget admission", () => {
-  it.each([
-    { provider: "openai", apiKey: "k1" },
-    { provider: "kiro", apiKey: null },
-  ])("does not enforce $provider with apiKey=$apiKey", async ({ provider, apiKey }) => {
+  it("enforces token limits for non-Kiro providers", async () => {
+    state.policy = {
+      id: "id-1", isActive: true,
+      inputTokensMonthly: 100,
+      outputTokensMonthly: 100,
+      creditsMonthly: 1,
+    };
+    state.usage = { inputTokens: 100, outputTokens: 0, credits: 0 };
+    const result = await resolveBudgetContext({
+      apiKey: "k1", provider: "openai", model: "gpt-5", body: { messages: [] },
+    });
+    expect(result.reject).toBeInstanceOf(Response);
+    expect(result.reject.status).toBe(429);
+  });
+
+  it("does not enforce a Kiro member policy without a client key", async () => {
     state.policy = {
       inputTokensMonthly: 100,
       outputTokensMonthly: 100,
       creditsMonthly: 1,
     };
     await expect(resolveBudgetContext({
-      apiKey, provider, model: "claude-haiku", body: { messages: [{ role: "user", content: "hi" }] },
+      apiKey: null, provider: "kiro", model: "claude-haiku", body: { messages: [{ role: "user", content: "hi" }] },
     })).resolves.toBeNull();
   });
 
@@ -233,6 +246,65 @@ describe("API key budget admission", () => {
     });
 
     expect(result).toMatchObject({ reject: null, outputCap: 40 });
+  });
+  it("intersects global, provider, and Team token allowances", async () => {
+    state.policy = { id: "id-1", isActive: true, inputTokensMonthly: 100, outputTokensMonthly: 80, creditsMonthly: null };
+    state.usage = { inputTokens: 10, outputTokens: 10, credits: 0 };
+    state.providerBudgets = [{
+      provider: "openai",
+      inputTokensMonthly: 50,
+      outputTokensMonthly: 20,
+      creditsMonthly: null,
+      usage: { inputTokens: 5, outputTokens: 5, credits: 0 },
+    }];
+    state.teamPolicy = { inputTokensMonthly: 30, outputTokensMonthly: 70, creditsMonthly: null };
+    state.teamUsage = { inputTokens: 4, outputTokens: 8, credits: 0 };
+
+    const result = await resolveBudgetContext({
+      apiKey: "k1", apiKeyId: "id-1", provider: "openai", model: "gpt-5",
+      body: { messages: [{ role: "user", content: "hello" }] },
+    });
+
+    expect(result).toMatchObject({ reject: null, outputCap: 15, apiKeyId: "id-1" });
+    expect(result.inputEstimate).toBeGreaterThan(0);
+  });
+
+  it("rejects when provider input allowance is exhausted", async () => {
+    state.policy = { id: "id-1", isActive: true, inputTokensMonthly: null, outputTokensMonthly: null, creditsMonthly: null };
+    state.providerBudgets = [{
+      provider: "openai",
+      inputTokensMonthly: 10,
+      outputTokensMonthly: null,
+      creditsMonthly: null,
+      usage: { inputTokens: 10, outputTokens: 0, credits: 0 },
+    }];
+
+    const result = await resolveBudgetContext({
+      apiKey: "k1", apiKeyId: "id-1", provider: "openai", model: "gpt-5",
+      body: { messages: [{ role: "user", content: "hello" }] },
+    });
+
+    expect(result.reject).toBeInstanceOf(Response);
+    expect(result.reject.status).toBe(429);
+  });
+
+  it("allows input-only requests when only output is exhausted", async () => {
+    state.policy = { id: "id-1", isActive: true, inputTokensMonthly: 100, outputTokensMonthly: null, creditsMonthly: null };
+    state.usage = { inputTokens: 0, outputTokens: 100, credits: 0 };
+    state.providerBudgets = [{
+      provider: "openai",
+      inputTokensMonthly: 100,
+      outputTokensMonthly: 0,
+      creditsMonthly: null,
+      usage: { inputTokens: 0, outputTokens: 0, credits: 0 },
+    }];
+
+    const result = await resolveBudgetContext({
+      apiKey: "k1", apiKeyId: "id-1", provider: "openai", model: "text-embedding-3-small",
+      body: { input: "hello" }, hasOutput: false,
+    });
+
+    expect(result).toMatchObject({ reject: null, outputCap: null });
   });
 
   it("excludes exhausted accounts while retaining an unlimited account", async () => {
@@ -368,11 +440,12 @@ describe("Kiro credits plumbing", () => {
   });
 
   it("accounts a completed request once across member, account, and team scopes", async () => {
-    state.db = await makeDb(["_meta", "usageHistory", "usageDaily", "apiKeyUsage", "teamUsage", "kiroAccountUsage"]);
+    state.db = await makeDb(["_meta", "usageHistory", "usageDaily", "apiKeyUsage", "apiKeyProviderUsage", "teamUsage", "kiroAccountUsage"]);
     const entry = {
       provider: "kiro",
       model: "claude-haiku",
       apiKey: "k1",
+      apiKeyId: "id-1",
       connectionId: "connA",
       timestamp: "2026-09-10T12:00:00.000Z",
       tokens: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
@@ -382,8 +455,11 @@ describe("Kiro credits plumbing", () => {
     await saveRequestUsage({ ...entry, tokens: { ...entry.tokens } });
     await saveRequestUsage({ ...entry, tokens: { ...entry.tokens } });
 
-    await expect(getApiKeyUsage("k1", "2026-09")).resolves.toEqual({
-      key: "k1", periodKey: "2026-09", inputTokens: 10, outputTokens: 5, credits: 2,
+    await expect(getApiKeyUsage("id-1", "2026-09")).resolves.toEqual({
+      apiKeyId: "id-1", periodKey: "2026-09", inputTokens: 10, outputTokens: 5, credits: 2,
+    });
+    expect(state.db.get("SELECT * FROM apiKeyProviderUsage")).toMatchObject({
+      apiKeyId: "id-1", provider: "kiro", periodKey: "2026-09", inputTokens: 10, outputTokens: 5, credits: 2,
     });
     await expect(getTeamUsage("2026-09")).resolves.toEqual({
       periodKey: "2026-09", inputTokens: 10, outputTokens: 5, credits: 2,
@@ -394,7 +470,7 @@ describe("Kiro credits plumbing", () => {
   });
 
   it("charges keyless Kiro requests to account and team scopes only", async () => {
-    state.db = await makeDb(["_meta", "usageHistory", "usageDaily", "apiKeyUsage", "teamUsage", "kiroAccountUsage"]);
+    state.db = await makeDb(["_meta", "usageHistory", "usageDaily", "apiKeyUsage", "apiKeyProviderUsage", "teamUsage", "kiroAccountUsage"]);
     await saveRequestUsage({
       provider: "kiro",
       model: "claude-haiku",
@@ -414,17 +490,17 @@ describe("Kiro credits plumbing", () => {
   });
 
   it("charges Kiro requests without a connection to member and team scopes only", async () => {
-    state.db = await makeDb(["_meta", "usageHistory", "usageDaily", "apiKeyUsage", "teamUsage", "kiroAccountUsage"]);
+    state.db = await makeDb(["_meta", "usageHistory", "usageDaily", "apiKeyUsage", "apiKeyProviderUsage", "teamUsage", "kiroAccountUsage"]);
     await saveRequestUsage({
       provider: "kiro",
       model: "claude-haiku",
       apiKey: "k1",
+      apiKeyId: "id-1",
       timestamp: "2026-09-10T12:02:00.000Z",
       tokens: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
       credits: 2,
     });
-
-    await expect(getApiKeyUsage("k1", "2026-09")).resolves.toMatchObject({
+    await expect(getApiKeyUsage("id-1", "2026-09")).resolves.toMatchObject({
       inputTokens: 10, outputTokens: 5, credits: 2,
     });
     await expect(getTeamUsage("2026-09")).resolves.toMatchObject({
@@ -433,29 +509,39 @@ describe("Kiro credits plumbing", () => {
     expect(state.db.get("SELECT * FROM kiroAccountUsage")).toBeUndefined();
   });
 
-  it("does not charge any Kiro counters for non-Kiro requests", async () => {
-    state.db = await makeDb(["_meta", "usageHistory", "usageDaily", "apiKeyUsage", "teamUsage", "kiroAccountUsage"]);
+  it("charges token usage for non-Kiro providers without Kiro credits", async () => {
+    state.db = await makeDb(["_meta", "usageHistory", "usageDaily", "apiKeyUsage", "apiKeyProviderUsage", "teamUsage", "kiroAccountUsage"]);
     await saveRequestUsage({
       provider: "openai",
       model: "gpt-test",
       apiKey: "k1",
+      apiKeyId: "id-1",
       connectionId: "connA",
       timestamp: "2026-09-10T13:00:00.000Z",
       tokens: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
       credits: 9,
     });
 
-    expect(state.db.get("SELECT * FROM apiKeyUsage")).toBeUndefined();
-    expect(state.db.get("SELECT * FROM teamUsage")).toBeUndefined();
+    await expect(getApiKeyUsage("id-1", "2026-09")).resolves.toMatchObject({
+      inputTokens: 10, outputTokens: 5, credits: 0,
+    });
+    expect(state.db.get("SELECT * FROM apiKeyProviderUsage")).toMatchObject({
+      apiKeyId: "id-1", provider: "openai", inputTokens: 10, outputTokens: 5, credits: 0,
+    });
+    await expect(getTeamUsage("2026-09")).resolves.toMatchObject({
+      inputTokens: 10, outputTokens: 5, credits: 0,
+    });
     expect(state.db.get("SELECT * FROM kiroAccountUsage")).toBeUndefined();
   });
 
 
-  it("keeps the dashboard API key modal state declaration in source", async () => {
+  it("keeps the provider budget editor in the dashboard", async () => {
     const source = await (await import("node:fs/promises")).readFile(
-      new URL("../../src/app/(dashboard)/dashboard/endpoint/EndpointPageClient.js", import.meta.url),
+      new URL("../../src/app/(dashboard)/dashboard/team/ApiKeyBudgetModal.js", import.meta.url),
       "utf8"
     );
-    expect(source).toContain("const [showAddModal, setShowAddModal] = useState(false);");
+    expect(source).toContain("isOpen={isOpen}");
+    expect(source).toContain("Add provider limit");
+    expect(source).toContain("/providers/${encodeURIComponent(provider)}/reset-usage");
   });
 });
