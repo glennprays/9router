@@ -6,15 +6,16 @@ export function monthKey(timestamp = new Date().toISOString()) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
 
-export async function getApiKeyUsage(key, periodKey = monthKey()) {
+export async function getApiKeyUsage(apiKeyId, periodKey = monthKey()) {
   const db = await getAdapter();
   const row = db.get(
-    `SELECT key, periodKey, inputTokens, outputTokens, credits FROM apiKeyUsage WHERE key = ? AND periodKey = ?`,
-    [key, periodKey]
+    `SELECT apiKeyId, periodKey, inputTokens, outputTokens, credits
+     FROM apiKeyUsage WHERE apiKeyId = ? AND periodKey = ?`,
+    [apiKeyId, periodKey]
   );
-  if (!row) return { key, periodKey, inputTokens: 0, outputTokens: 0, credits: 0 };
+  if (!row) return { apiKeyId, periodKey, inputTokens: 0, outputTokens: 0, credits: 0 };
   return {
-    key: row.key,
+    apiKeyId: row.apiKeyId,
     periodKey: row.periodKey,
     inputTokens: row.inputTokens || 0,
     outputTokens: row.outputTokens || 0,
@@ -24,16 +25,16 @@ export async function getApiKeyUsage(key, periodKey = monthKey()) {
 
 // Synchronous: takes an already-open adapter so it can run inside an
 // existing db.transaction() (see usageRepo.saveRequestUsage).
-export function upsertApiKeyUsage(db, { key, periodKey, inputTokens = 0, outputTokens = 0, credits = 0 }) {
+export function upsertApiKeyUsage(db, { apiKeyId, periodKey, inputTokens = 0, outputTokens = 0, credits = 0 }) {
   db.run(
-    `INSERT INTO apiKeyUsage(key, periodKey, inputTokens, outputTokens, credits, updatedAt)
+    `INSERT INTO apiKeyUsage(apiKeyId, periodKey, inputTokens, outputTokens, credits, updatedAt)
      VALUES(?, ?, ?, ?, ?, ?)
-     ON CONFLICT(key, periodKey) DO UPDATE SET
+     ON CONFLICT(apiKeyId, periodKey) DO UPDATE SET
        inputTokens = inputTokens + excluded.inputTokens,
        outputTokens = outputTokens + excluded.outputTokens,
        credits = credits + excluded.credits,
        updatedAt = excluded.updatedAt`,
-    [key, periodKey, inputTokens, outputTokens, credits, new Date().toISOString()]
+    [apiKeyId, periodKey, inputTokens, outputTokens, credits, new Date().toISOString()]
   );
 }
 
@@ -72,15 +73,32 @@ export async function getKiroCreditRate(model) {
   return rate;
 }
 
-export async function resetApiKeyUsageByKey(key) {
+export async function resetApiKeyUsageById(id, periodKey = monthKey()) {
+  if (!id) return false;
   const db = await getAdapter();
-  db.run(`DELETE FROM apiKeyUsage WHERE key = ?`, [key]);
+  let exists = false;
+  db.transaction(() => {
+    exists = Boolean(db.get(`SELECT id FROM apiKeys WHERE id = ?`, [id]));
+    if (!exists) return;
+    db.run(
+      `DELETE FROM apiKeyUsage WHERE apiKeyId = ? AND periodKey = ?`,
+      [id, periodKey]
+    );
+    db.run(
+      `DELETE FROM apiKeyProviderUsage WHERE apiKeyId = ? AND periodKey = ?`,
+      [id, periodKey]
+    );
+  });
+  return exists;
+}
+
+export function deleteApiKeyUsageByIdSync(db, id) {
+  db.run(`DELETE FROM apiKeyUsage WHERE apiKeyId = ?`, [id]);
+}
+
+export async function deleteApiKeyUsageById(id) {
+  const db = await getAdapter();
+  deleteApiKeyUsageByIdSync(db, id);
   return true;
 }
 
-export async function resetApiKeyUsageById(id) {
-  const db = await getAdapter();
-  const row = db.get(`SELECT key FROM apiKeys WHERE id = ?`, [id]);
-  if (!row || !row.key) return false;
-  return resetApiKeyUsageByKey(row.key);
-}

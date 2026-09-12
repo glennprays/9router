@@ -1,3 +1,5 @@
+import { AI_PROVIDERS } from "../../shared/constants/providers.js";
+import { normalizeProviderId } from "../providerNormalization.js";
 import fs from "node:fs";
 import path from "node:path";
 import { LEGACY_FILES, DB_DIR } from "./paths.js";
@@ -112,45 +114,93 @@ function localMonthKey(date = new Date()) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
 }
 
-// Version 2 introduced write-side per-key counters after usageHistory already
-// existed. Seed the current local month once so an upgrade cannot reset a
-// limited key's already-recorded Kiro spend.
+function canonicalProviderId(provider) {
+  if (typeof provider !== "string") return provider;
+  const normalized = normalizeProviderId(provider);
+  const target = provider.trim().toLowerCase();
+  const entry = Object.values(AI_PROVIDERS).find((candidate) => (
+    candidate.id === normalized
+    || candidate.id?.toLowerCase() === target
+    || candidate.alias?.toLowerCase() === target
+    || candidate.aliases?.some((alias) => alias.toLowerCase() === target)
+  ));
+  return entry?.id || normalized;
+}
+
+// Version 4 replaces the legacy Kiro-only backfill with a current-month
+// rebuild for both the stable global key counter and provider counters.
+// Previous periods remain untouched so historical allowance state survives.
 function backfillApiKeyUsage(adapter) {
-  const marker = "apiKeyUsageBackfilledV2";
+  const marker = "apiKeyUsageBackfilledV4";
   if (getMetaSync(adapter, marker, null) === "1") return;
 
   const now = new Date();
   const periodKey = localMonthKey(now);
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
   const rows = adapter.all(
-    `SELECT apiKey, promptTokens, completionTokens, tokens
-     FROM usageHistory
-     WHERE provider = 'kiro' AND apiKey IS NOT NULL AND timestamp >= ?`,
+    `SELECT k.id AS apiKeyId, h.provider, h.promptTokens, h.completionTokens, h.tokens
+     FROM usageHistory h
+     INNER JOIN apiKeys k ON k.key = h.apiKey
+     WHERE h.apiKey IS NOT NULL AND h.timestamp >= ?`,
     [monthStart]
   );
+  const global = new Map();
+  const providers = new Map();
+
+  for (const row of rows) {
+    const provider = canonicalProviderId(row.provider);
+    if (typeof provider !== "string" || !provider) continue;
+
+    const inputTokens = Number(row.promptTokens) || 0;
+    const outputTokens = Number(row.completionTokens) || 0;
+    const parsedTokens = parseJson(row.tokens, {});
+    const credits = provider === "kiro"
+      ? (Number.isFinite(Number(parsedTokens?.kiro_credits)) ? Number(parsedTokens.kiro_credits) : 0)
+      : 0;
+
+    const globalKey = row.apiKeyId;
+    const globalEntry = global.get(globalKey) || { inputTokens: 0, outputTokens: 0, credits: 0 };
+    globalEntry.inputTokens += inputTokens;
+    globalEntry.outputTokens += outputTokens;
+    globalEntry.credits += credits;
+    global.set(globalKey, globalEntry);
+
+    const providerKey = `${row.apiKeyId}\u0000${provider}`;
+    const providerEntry = providers.get(providerKey) || {
+      apiKeyId: row.apiKeyId,
+      provider,
+      inputTokens: 0,
+      outputTokens: 0,
+      credits: 0,
+    };
+    providerEntry.inputTokens += inputTokens;
+    providerEntry.outputTokens += outputTokens;
+    providerEntry.credits += credits;
+    providers.set(providerKey, providerEntry);
+  }
 
   adapter.transaction(() => {
-    for (const row of rows) {
-      const tokens = parseJson(row.tokens, {});
-      const credits = Number(tokens?.kiro_credits);
+    adapter.run(`DELETE FROM apiKeyUsage WHERE periodKey = ?`, [periodKey]);
+    adapter.run(`DELETE FROM apiKeyProviderUsage WHERE periodKey = ?`, [periodKey]);
+
+    for (const [apiKeyId, usage] of global) {
       adapter.run(
-        `INSERT INTO apiKeyUsage(key, periodKey, inputTokens, outputTokens, credits, updatedAt)
-         VALUES(?, ?, ?, ?, ?, ?)
-         ON CONFLICT(key, periodKey) DO UPDATE SET
-           inputTokens = inputTokens + excluded.inputTokens,
-           outputTokens = outputTokens + excluded.outputTokens,
-           credits = credits + excluded.credits,
-           updatedAt = excluded.updatedAt`,
+        `INSERT INTO apiKeyUsage(apiKeyId, periodKey, inputTokens, outputTokens, credits, updatedAt)
+         VALUES(?, ?, ?, ?, ?, ?)`,
+        [apiKeyId, periodKey, usage.inputTokens, usage.outputTokens, usage.credits, now.toISOString()]
+      );
+    }
+    for (const usage of providers.values()) {
+      adapter.run(
+        `INSERT INTO apiKeyProviderUsage(apiKeyId, provider, periodKey, inputTokens, outputTokens, credits, updatedAt)
+         VALUES(?, ?, ?, ?, ?, ?, ?)`,
         [
-          row.apiKey,
-          periodKey,
-          Number(row.promptTokens) || 0,
-          Number(row.completionTokens) || 0,
-          Number.isFinite(credits) ? credits : 0,
-          now.toISOString(),
+          usage.apiKeyId, usage.provider, periodKey, usage.inputTokens,
+          usage.outputTokens, usage.credits, now.toISOString(),
         ]
       );
     }
+
     setMetaSync(adapter, marker, "1");
   });
 }

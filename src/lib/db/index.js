@@ -1,7 +1,11 @@
 // Public API barrel — all DB functions
 import { getAdapter } from "./driver.js";
 import { stringifyJson, parseJson } from "./helpers/jsonCol.js";
-
+import {
+  deleteApiKeyProviderDataSync,
+  replaceApiKeyProviderBudgetsSync,
+} from "./repos/apiKeyProviderBudgetRepo.js";
+import { deleteApiKeyUsageByIdSync } from "./repos/apiKeyUsageRepo.js";
 // Settings
 export {
   getSettings, updateSettings, isCloudEnabled, getCloudUrl, exportSettings,
@@ -36,8 +40,16 @@ export {
 // API key usage / budgets
 export {
   getApiKeyUsage, upsertApiKeyUsage, getKiroCreditRate,
-  resetApiKeyUsageByKey, resetApiKeyUsageById, monthKey,
+  resetApiKeyUsageById, deleteApiKeyUsageById,
+  monthKey,
 } from "./repos/apiKeyUsageRepo.js";
+
+export {
+  getApiKeyProviderBudgets, replaceApiKeyProviderBudgets,
+  replaceApiKeyProviderBudgetsSync, upsertApiKeyProviderUsage,
+  getApiKeyProviderUsage, resetApiKeyProviderUsage,
+  deleteApiKeyProviderData, deleteApiKeyProviderDataSync,
+} from "./repos/apiKeyProviderBudgetRepo.js";
 
 // Team budget
 export {
@@ -97,7 +109,9 @@ export async function exportDb() {
     providerNodes: db.all(`SELECT * FROM providerNodes`).map((r) => ({ ...parseJson(r.data, {}), id: r.id, type: r.type, name: r.name, createdAt: r.createdAt, updatedAt: r.updatedAt })),
     proxyPools: db.all(`SELECT * FROM proxyPools`).map((r) => ({ ...parseJson(r.data, {}), id: r.id, isActive: r.isActive === 1, testStatus: r.testStatus, createdAt: r.createdAt, updatedAt: r.updatedAt })),
     apiKeys: db.all(`SELECT * FROM apiKeys`).map((r) => ({ id: r.id, key: r.key, name: r.name, machineId: r.machineId, isActive: r.isActive === 1, createdAt: r.createdAt, inputTokensMonthly: r.inputTokensMonthly, outputTokensMonthly: r.outputTokensMonthly, creditsMonthly: r.creditsMonthly })),
-    apiKeyUsage: db.all(`SELECT key, periodKey, inputTokens, outputTokens, credits, updatedAt FROM apiKeyUsage`),
+    apiKeyUsage: db.all(`SELECT apiKeyId, periodKey, inputTokens, outputTokens, credits, updatedAt FROM apiKeyUsage`),
+    apiKeyProviderBudget: db.all(`SELECT apiKeyId, provider, inputTokensMonthly, outputTokensMonthly, creditsMonthly, updatedAt FROM apiKeyProviderBudget`),
+    apiKeyProviderUsage: db.all(`SELECT apiKeyId, provider, periodKey, inputTokens, outputTokens, credits, updatedAt FROM apiKeyProviderUsage`),
     teamBudgetPolicy: db.all(`SELECT id, inputTokensMonthly, outputTokensMonthly, creditsMonthly, updatedAt FROM teamBudgetPolicy`),
     teamUsage: db.all(`SELECT periodKey, inputTokens, outputTokens, credits, updatedAt FROM teamUsage`),
     kiroAccountBudget: db.all(`SELECT connectionId, creditsMonthly, updatedAt FROM kiroAccountBudget`),
@@ -131,6 +145,8 @@ export async function importDb(payload) {
     db.run(`DELETE FROM proxyPools`);
     db.run(`DELETE FROM apiKeys`);
     db.run(`DELETE FROM apiKeyUsage`);
+    db.run(`DELETE FROM apiKeyProviderBudget`);
+    db.run(`DELETE FROM apiKeyProviderUsage`);
     db.run(`DELETE FROM teamBudgetPolicy`);
     db.run(`DELETE FROM teamUsage`);
     db.run(`DELETE FROM kiroAccountBudget`);
@@ -170,10 +186,32 @@ export async function importDb(payload) {
         [k.id, k.key, k.name || null, k.machineId || null, k.isActive === false ? 0 : 1, k.createdAt || new Date().toISOString(), k.inputTokensMonthly ?? null, k.outputTokensMonthly ?? null, k.creditsMonthly ?? null]
       );
     }
+    // New exports carry apiKeyId. Pre-feature exports carry the raw key in
+    // `key`; resolve either form against the keys imported above and skip
+    // orphaned usage rows that cannot be mapped safely.
     for (const u of payload.apiKeyUsage || []) {
+      const apiKeyId = u.apiKeyId || db.get(`SELECT id FROM apiKeys WHERE key = ?`, [u.key])?.id;
+      if (!apiKeyId || !db.get(`SELECT id FROM apiKeys WHERE id = ?`, [apiKeyId])) continue;
       db.run(
-        `INSERT OR REPLACE INTO apiKeyUsage(key, periodKey, inputTokens, outputTokens, credits, updatedAt) VALUES(?, ?, ?, ?, ?, ?)`,
-        [u.key, u.periodKey, u.inputTokens ?? 0, u.outputTokens ?? 0, u.credits ?? 0, u.updatedAt || new Date().toISOString()]
+        `INSERT OR REPLACE INTO apiKeyUsage(apiKeyId, periodKey, inputTokens, outputTokens, credits, updatedAt) VALUES(?, ?, ?, ?, ?, ?)`,
+        [apiKeyId, u.periodKey, u.inputTokens ?? 0, u.outputTokens ?? 0, u.credits ?? 0, u.updatedAt || new Date().toISOString()]
+      );
+    }
+    for (const p of payload.apiKeyProviderBudget || []) {
+      const apiKeyId = p.apiKeyId || db.get(`SELECT id FROM apiKeys WHERE key = ?`, [p.key])?.id;
+      if (!apiKeyId || !p.provider || !db.get(`SELECT id FROM apiKeys WHERE id = ?`, [apiKeyId])) continue;
+      if (p.inputTokensMonthly == null && p.outputTokensMonthly == null && p.creditsMonthly == null) continue;
+      db.run(
+        `INSERT OR REPLACE INTO apiKeyProviderBudget(apiKeyId, provider, inputTokensMonthly, outputTokensMonthly, creditsMonthly, updatedAt) VALUES(?, ?, ?, ?, ?, ?)`,
+        [apiKeyId, p.provider, p.inputTokensMonthly ?? null, p.outputTokensMonthly ?? null, p.creditsMonthly ?? null, p.updatedAt || new Date().toISOString()]
+      );
+    }
+    for (const u of payload.apiKeyProviderUsage || []) {
+      const apiKeyId = u.apiKeyId || db.get(`SELECT id FROM apiKeys WHERE key = ?`, [u.key])?.id;
+      if (!apiKeyId || !u.provider || !db.get(`SELECT id FROM apiKeys WHERE id = ?`, [apiKeyId])) continue;
+      db.run(
+        `INSERT OR REPLACE INTO apiKeyProviderUsage(apiKeyId, provider, periodKey, inputTokens, outputTokens, credits, updatedAt) VALUES(?, ?, ?, ?, ?, ?, ?)`,
+        [apiKeyId, u.provider, u.periodKey, u.inputTokens ?? 0, u.outputTokens ?? 0, u.credits ?? 0, u.updatedAt || new Date().toISOString()]
       );
     }
     for (const p of payload.teamBudgetPolicy || []) {

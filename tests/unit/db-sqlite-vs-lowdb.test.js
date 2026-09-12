@@ -95,6 +95,7 @@ describe("DB SQLite layer — public API parity", () => {
       provider: "kiro",
       model: "claude-haiku",
       apiKey: key.key,
+      apiKeyId: key.id,
       credits: 0.75,
       timestamp: "2026-09-10T12:00:00.000Z",
       tokens: { prompt_tokens: 11, completion_tokens: 7 },
@@ -104,13 +105,14 @@ describe("DB SQLite layer — public API parity", () => {
       provider: "kiro",
       model: "claude-haiku",
       apiKey: key.key,
+      apiKeyId: key.id,
       credits: 0.25,
       timestamp: "2026-09-10T12:00:01.000Z",
       tokens: { prompt_tokens: 5, completion_tokens: 3 },
     });
     await sqliteDb.importDb(snapshotWithUsage);
-    await expect(sqliteDb.getApiKeyUsage(key.key, "2026-09")).resolves.toMatchObject({
-      inputTokens: 11, outputTokens: 7, credits: 0.75,
+    await expect(sqliteDb.getApiKeyUsage(key.id, "2026-09")).resolves.toMatchObject({
+      apiKeyId: key.id, inputTokens: 11, outputTokens: 7, credits: 0.75,
     });
   });
   it("exports and imports team and Kiro account budget rows", async () => {

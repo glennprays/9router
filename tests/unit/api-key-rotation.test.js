@@ -87,17 +87,17 @@ afterEach(() => {
 });
 
 describe("rotateApiKey", () => {
-  it("rotates the secret, migrates usage, preserves policy, and leaves history auditable", async () => {
+  it("rotates the secret, preserves stable usage and policy, and leaves history auditable", async () => {
     const oldKey = seedKey();
     state.db.run(
-      `INSERT INTO apiKeyUsage(key, periodKey, inputTokens, outputTokens, credits, updatedAt)
+      `INSERT INTO apiKeyUsage(apiKeyId, periodKey, inputTokens, outputTokens, credits, updatedAt)
        VALUES (?, ?, ?, ?, ?, ?)`,
-      [oldKey.key, "2026-09", 10, 20, 1.25, "2026-09-10T00:00:00.000Z"]
+      [oldKey.id, "2026-09", 10, 20, 1.25, "2026-09-10T00:00:00.000Z"]
     );
     state.db.run(
-      `INSERT INTO apiKeyUsage(key, periodKey, inputTokens, outputTokens, credits, updatedAt)
+      `INSERT INTO apiKeyUsage(apiKeyId, periodKey, inputTokens, outputTokens, credits, updatedAt)
        VALUES (?, ?, ?, ?, ?, ?)`,
-      [oldKey.key, "2026-08", 3, 4, 0.5, "2026-08-10T00:00:00.000Z"]
+      [oldKey.id, "2026-08", 3, 4, 0.5, "2026-08-10T00:00:00.000Z"]
     );
     state.db.run(
       `INSERT INTO usageHistory(timestamp, provider, model, apiKey, promptTokens, completionTokens, cost)
@@ -122,32 +122,33 @@ describe("rotateApiKey", () => {
       outputTokensMonthly: oldKey.outputTokensMonthly,
       creditsMonthly: oldKey.creditsMonthly,
     });
-    await expect(getApiKeyUsage(result.key, "2026-09")).resolves.toMatchObject({
-      key: result.key, inputTokens: 10, outputTokens: 20, credits: 1.25,
+    await expect(getApiKeyUsage(result.id, "2026-09")).resolves.toMatchObject({
+      apiKeyId: result.id, inputTokens: 10, outputTokens: 20, credits: 1.25,
     });
-    await expect(getApiKeyUsage(result.key, "2026-08")).resolves.toMatchObject({
-      key: result.key, inputTokens: 3, outputTokens: 4, credits: 0.5,
+    await expect(getApiKeyUsage(result.id, "2026-08")).resolves.toMatchObject({
+      apiKeyId: result.id, inputTokens: 3, outputTokens: 4, credits: 0.5,
     });
     expect(state.db.get("SELECT apiKey FROM usageHistory WHERE id = 1").apiKey).toBe(oldKey.key);
-    expect(state.db.all("SELECT key FROM apiKeyUsage")).toHaveLength(2);
-    expect(state.db.all("SELECT key FROM apiKeyUsage").every((row) => row.key === result.key)).toBe(true);
+    expect(state.db.all("SELECT apiKeyId FROM apiKeyUsage")).toHaveLength(2);
+    expect(state.db.all("SELECT apiKeyId FROM apiKeyUsage").every((row) => row.apiKeyId === result.id)).toBe(true);
   });
 
-  it("rolls back the API-key update when usage migration fails", async () => {
+  it("rolls back the API-key update when rotation fails", async () => {
     const oldKey = seedKey();
     state.db.run(
-      `INSERT INTO apiKeyUsage(key, periodKey, inputTokens, outputTokens, credits)
+      `INSERT INTO apiKeyUsage(apiKeyId, periodKey, inputTokens, outputTokens, credits)
        VALUES (?, ?, ?, ?, ?)`,
-      [oldKey.key, "2026-09", 10, 20, 1.25]
+      [oldKey.id, "2026-09", 10, 20, 1.25]
     );
-    state.db.exec(`CREATE TRIGGER fail_key_usage_migration BEFORE UPDATE ON apiKeyUsage
-      BEGIN SELECT RAISE(ABORT, 'migration failed'); END;`);
+    state.db.exec(`CREATE TRIGGER fail_key_rotation BEFORE UPDATE ON apiKeys
+      BEGIN SELECT RAISE(ABORT, 'rotation failed'); END;`);
 
-    await expect(rotateApiKey(oldKey.id)).rejects.toThrow("migration failed");
+    await expect(rotateApiKey(oldKey.id)).rejects.toThrow("rotation failed");
     expect((await getApiKeyById(oldKey.id)).key).toBe(oldKey.key);
     expect(await validateApiKey(oldKey.key)).toBe(true);
-    expect(state.db.get("SELECT key FROM apiKeyUsage WHERE periodKey = '2026-09'").key).toBe(oldKey.key);
+    expect(state.db.get("SELECT apiKeyId FROM apiKeyUsage WHERE periodKey = '2026-09'").apiKeyId).toBe(oldKey.id);
   });
+
 
   it("derives a machine id for legacy rows that have none instead of minting sk-null keys", async () => {
     const legacy = seedKey({ machineId: null });

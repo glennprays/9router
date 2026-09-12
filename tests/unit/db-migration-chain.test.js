@@ -35,10 +35,12 @@ describe("Schema migrations", () => {
     const tables = db.all(`SELECT name FROM sqlite_master WHERE type='table'`).map(t => t.name);
     expect(tables).toEqual(expect.arrayContaining([
       "_meta", "settings", "providerConnections", "providerNodes",
-      "proxyPools", "apiKeys", "combos", "kv", "usageHistory", "usageDaily", "requestDetails",
+      "proxyPools", "apiKeys", "apiKeyUsage", "apiKeyProviderBudget", "apiKeyProviderUsage",
+      "combos", "kv", "usageHistory", "usageDaily", "requestDetails",
       "teamBudgetPolicy", "teamUsage", "kiroAccountBudget", "kiroAccountUsage",
     ]));
-    expect(db.all(`PRAGMA index_list(kiroAccountUsage)`).map(i => i.name)).toContain("idx_kau_period");
+    expect(db.all(`PRAGMA index_list(apiKeyProviderBudget)`).map(i => i.name)).toContain("idx_akpb_key");
+    expect(db.all(`PRAGMA index_list(apiKeyProviderUsage)`).map(i => i.name)).toContain("idx_akpu_key_period");
   });
 
   it("existing DB at older schemaVersion → re-applies pending migrations on restart", async () => {
@@ -85,25 +87,87 @@ describe("Schema migrations", () => {
     expect(aliases).toHaveLength(1);
   });
 
-  it("backfills legacy current-month Kiro usage without throwing", async () => {
+  it("backfills current-month usage by stable key id across providers and skips orphans", async () => {
+    const now = new Date();
+    const currentPeriod = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+    const previousPeriod = `${now.getFullYear()}-${String(now.getMonth()).padStart(2, "0")}`;
     fs.writeFileSync(path.join(tempDir, "db.json"), JSON.stringify({
-      apiKeys: [{ id: "k1", key: "legacy-key", name: "legacy", createdAt: new Date().toISOString() }],
+      apiKeys: [
+        { id: "k1", key: "legacy-key", name: "legacy", createdAt: now.toISOString() },
+      ],
     }));
     fs.writeFileSync(path.join(tempDir, "usage.json"), JSON.stringify({
-      history: [{
-        timestamp: new Date().toISOString(),
-        provider: "kiro",
-        model: "claude-haiku",
-        apiKey: "legacy-key",
-        tokens: { prompt_tokens: 12, completion_tokens: 3, kiro_credits: 1.25 },
-      }],
+      history: [
+        {
+          timestamp: now.toISOString(),
+          provider: "openai",
+          model: "gpt-test",
+          apiKey: "legacy-key",
+          tokens: { prompt_tokens: 12, completion_tokens: 3, total_tokens: 15 },
+        },
+        {
+          timestamp: now.toISOString(),
+          provider: "kiro",
+          model: "claude-haiku",
+          apiKey: "legacy-key",
+          tokens: { prompt_tokens: 4, completion_tokens: 2, kiro_credits: 1.25 },
+        },
+        {
+          timestamp: now.toISOString(),
+          provider: "openai",
+          model: "gpt-test",
+          apiKey: "orphan-key",
+          tokens: { prompt_tokens: 99, completion_tokens: 99 },
+        },
+      ],
     }));
 
     const { getAdapter } = await import("@/lib/db/driver.js");
     const db = await getAdapter();
 
-    expect(db.get("SELECT key, inputTokens, outputTokens, credits FROM apiKeyUsage WHERE key = ?", ["legacy-key"]))
-      .toMatchObject({ key: "legacy-key", inputTokens: 12, outputTokens: 3, credits: 1.25 });
+    expect(db.get("SELECT apiKeyId, inputTokens, outputTokens, credits FROM apiKeyUsage WHERE apiKeyId = ?", ["k1"]))
+      .toMatchObject({ apiKeyId: "k1", inputTokens: 16, outputTokens: 5, credits: 1.25 });
+    expect(db.all("SELECT apiKeyId, provider, inputTokens, outputTokens, credits FROM apiKeyProviderUsage"))
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ apiKeyId: "k1", provider: "openai", inputTokens: 12, outputTokens: 3, credits: 0 }),
+        expect.objectContaining({ apiKeyId: "k1", provider: "kiro", inputTokens: 4, outputTokens: 2, credits: 1.25 }),
+      ]));
+    expect(db.get("SELECT COUNT(*) AS count FROM apiKeyProviderUsage").count).toBe(2);
+    expect(db.get("SELECT value FROM _meta WHERE key = 'apiKeyUsageBackfilledV4'").value).toBe("1");
+    expect(currentPeriod).toMatch(/^\d{4}-\d{2}$/);
+    expect(previousPeriod).toMatch(/^\d{4}-\d{2}$/);
+  });
+  it("converts legacy raw-key usage rows to live key ids before additive sync", async () => {
+    const { createSqlJsAdapter } = await import("@/lib/db/adapters/sqljsAdapter.js");
+    fs.mkdirSync(path.join(tempDir, "db"), { recursive: true });
+    const old = await createSqlJsAdapter(path.join(tempDir, "db", "data.sqlite"));
+    old.exec(`
+      CREATE TABLE _meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE apiKeys (id TEXT PRIMARY KEY, key TEXT UNIQUE NOT NULL, name TEXT, machineId TEXT, isActive INTEGER DEFAULT 1, createdAt TEXT NOT NULL);
+      CREATE TABLE apiKeyUsage (
+        key TEXT NOT NULL,
+        periodKey TEXT NOT NULL,
+        inputTokens INTEGER DEFAULT 0,
+        outputTokens INTEGER DEFAULT 0,
+        credits REAL DEFAULT 0,
+        updatedAt TEXT,
+        PRIMARY KEY (key, periodKey)
+      );
+    `);
+    old.run("INSERT INTO _meta(key, value) VALUES('schemaVersion', '3')");
+    old.run("INSERT INTO apiKeys(id, key, createdAt) VALUES('k1', 'live-key', ?)", [new Date().toISOString()]);
+    old.run("INSERT INTO apiKeyUsage(key, periodKey, inputTokens) VALUES('live-key', '2026-08', 7)");
+    old.run("INSERT INTO apiKeyUsage(key, periodKey, inputTokens) VALUES('orphan-key', '2026-08', 99)");
+    old.close();
+
+    const { getAdapter } = await import("@/lib/db/driver.js");
+    const db = await getAdapter();
+    const columns = db.all("PRAGMA table_info(apiKeyUsage)").map((row) => row.name);
+    expect(columns).toContain("apiKeyId");
+    expect(columns).not.toContain("key");
+    expect(db.get("SELECT apiKeyId, inputTokens FROM apiKeyUsage WHERE periodKey = '2026-08'"))
+      .toMatchObject({ apiKeyId: "k1", inputTokens: 7 });
+    expect(db.get("SELECT COUNT(*) AS count FROM apiKeyUsage WHERE periodKey = '2026-08'").count).toBe(1);
   });
 
   it("auto-sync re-creates missing index when DB lacks it", async () => {

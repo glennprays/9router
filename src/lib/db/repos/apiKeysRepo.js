@@ -1,7 +1,14 @@
 import { v4 as uuidv4 } from "uuid";
 import { getAdapter } from "../driver.js";
-import { monthKey } from "./apiKeyUsageRepo.js";
-
+import {
+  deleteApiKeyUsageByIdSync,
+  monthKey,
+} from "./apiKeyUsageRepo.js";
+import {
+  deleteApiKeyProviderDataSync,
+  getApiKeyProviderBudgets,
+  replaceApiKeyProviderBudgetsSync,
+} from "./apiKeyProviderBudgetRepo.js";
 function rowToKey(row) {
   if (!row) return null;
   return {
@@ -28,7 +35,6 @@ export async function getApiKeyById(id) {
   const row = db.get(`SELECT * FROM apiKeys WHERE id = ?`, [id]);
   return rowToKey(row);
 }
-
 export async function createApiKey(name, machineId, limits = {}) {
   if (!machineId) throw new Error("machineId is required");
   const db = await getAdapter();
@@ -45,23 +51,28 @@ export async function createApiKey(name, machineId, limits = {}) {
     outputTokensMonthly: limits.outputTokensMonthly ?? null,
     creditsMonthly: limits.creditsMonthly ?? null,
   };
-  db.run(
-    `INSERT INTO apiKeys(id, key, name, machineId, isActive, createdAt, inputTokensMonthly, outputTokensMonthly, creditsMonthly) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      apiKey.id, apiKey.key, apiKey.name, apiKey.machineId, 1, apiKey.createdAt,
-      apiKey.inputTokensMonthly, apiKey.outputTokensMonthly, apiKey.creditsMonthly,
-    ]
-  );
+  db.transaction(() => {
+    db.run(
+      `INSERT INTO apiKeys(id, key, name, machineId, isActive, createdAt, inputTokensMonthly, outputTokensMonthly, creditsMonthly) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        apiKey.id, apiKey.key, apiKey.name, apiKey.machineId, 1, apiKey.createdAt,
+        apiKey.inputTokensMonthly, apiKey.outputTokensMonthly, apiKey.creditsMonthly,
+      ]
+    );
+    replaceApiKeyProviderBudgetsSync(db, apiKey.id, limits.providerBudgets);
+  });
   return apiKey;
 }
 
 export async function updateApiKey(id, data) {
   const db = await getAdapter();
   let result = null;
+  const hasProviderBudgets = Object.prototype.hasOwnProperty.call(data, "providerBudgets");
+  const { providerBudgets, ...keyData } = data;
   db.transaction(() => {
     const row = db.get(`SELECT * FROM apiKeys WHERE id = ?`, [id]);
     if (!row) return;
-    const merged = { ...rowToKey(row), ...data };
+    const merged = { ...rowToKey(row), ...keyData };
     db.run(
       `UPDATE apiKeys SET key = ?, name = ?, machineId = ?, isActive = ?, inputTokensMonthly = ?, outputTokensMonthly = ?, creditsMonthly = ? WHERE id = ?`,
       [
@@ -70,15 +81,26 @@ export async function updateApiKey(id, data) {
         merged.creditsMonthly ?? null, id,
       ]
     );
-    result = merged;
+    if (hasProviderBudgets) replaceApiKeyProviderBudgetsSync(db, id, providerBudgets);
+    result = {
+      ...merged,
+      ...(hasProviderBudgets ? { providerBudgets: providerBudgets ?? null } : {}),
+    };
   });
   return result;
 }
 
 export async function deleteApiKey(id) {
   const db = await getAdapter();
-  const res = db.run(`DELETE FROM apiKeys WHERE id = ?`, [id]);
-  return (res?.changes ?? 0) > 0;
+  let deleted = false;
+  db.transaction(() => {
+    const result = db.run(`DELETE FROM apiKeys WHERE id = ?`, [id]);
+    if ((result?.changes ?? 0) === 0) return;
+    deleteApiKeyUsageByIdSync(db, id);
+    deleteApiKeyProviderDataSync(db, id);
+    deleted = true;
+  });
+  return deleted;
 }
 
 export async function validateApiKey(key) {
@@ -99,15 +121,16 @@ export async function getApiKeyPolicyByKey(key) {
 
 export async function getApiKeysWithUsage() {
   const db = await getAdapter();
-  const keys = (await getApiKeys());
+  const keys = await getApiKeys();
   const period = monthKey();
   const rows = db.all(
-    `SELECT key, inputTokens, outputTokens, credits FROM apiKeyUsage WHERE periodKey = ?`,
+    `SELECT apiKeyId, inputTokens, outputTokens, credits
+     FROM apiKeyUsage WHERE periodKey = ?`,
     [period]
   );
-  const byKey = new Map(rows.map((r) => [r.key, r]));
-  return keys.map((k) => {
-    const u = byKey.get(k.key);
+  const byKey = new Map(rows.map((r) => [r.apiKeyId, r]));
+  return Promise.all(keys.map(async (k) => {
+    const u = byKey.get(k.id);
     return {
       ...k,
       usage: {
@@ -116,13 +139,14 @@ export async function getApiKeysWithUsage() {
         outputTokens: u?.outputTokens || 0,
         credits: u?.credits || 0,
       },
+      providerBudgets: await getApiKeyProviderBudgets(k.id, period),
     };
-  });
+  }));
 }
 export async function rotateApiKey(id) {
   const db = await getAdapter();
   const { generateApiKeyWithMachine } = await import("@/shared/utils/apiKey");
-  const row = db.get(`SELECT id, key, machineId FROM apiKeys WHERE id = ?`, [id]);
+  const row = db.get(`SELECT id, machineId FROM apiKeys WHERE id = ?`, [id]);
   if (!row) return null;
   // Rows imported from legacy db.json carry machineId NULL; embedding "null" in the
   // secret would still pass the CRC check but is not a real machine-bound key.
@@ -133,11 +157,10 @@ export async function rotateApiKey(id) {
   }
   let result = null;
   db.transaction(() => {
-    const current = db.get(`SELECT key FROM apiKeys WHERE id = ?`, [id]);
+    const current = db.get(`SELECT id FROM apiKeys WHERE id = ?`, [id]);
     if (!current) return;
     const { key: newKey } = generateApiKeyWithMachine(machineId);
     db.run(`UPDATE apiKeys SET key = ?, machineId = ? WHERE id = ?`, [newKey, machineId, id]);
-    db.run(`UPDATE apiKeyUsage SET key = ? WHERE key = ?`, [newKey, current.key]);
     result = { id, key: newKey };
   });
   return result;

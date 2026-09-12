@@ -3,6 +3,7 @@ import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { getMeta, setMeta } from "../helpers/metaStore.js";
 import { upsertApiKeyUsage, monthKey } from "./apiKeyUsageRepo.js";
+import { upsertApiKeyProviderUsage } from "./apiKeyProviderBudgetRepo.js";
 import { upsertTeamUsage } from "./teamBudgetRepo.js";
 import { upsertKiroAccountUsage } from "./kiroAccountBudgetRepo.js";
 
@@ -249,10 +250,13 @@ export async function saveRequestUsage(entry) {
     entry.cost = await calculateCost(entry.provider, entry.model, entry.tokens);
 
     const tokens = entry.tokens || {};
-    const kiroCredits = Number.isFinite(Number(entry.credits)) ? Number(entry.credits) : null;
-    if (kiroCredits != null) tokens.kiro_credits = kiroCredits;
+    const providerId = String(entry.provider || "").toLowerCase() === "kr" ? "kiro" : entry.provider;
+    const isKiro = providerId === "kiro";
+    const nativeCredits = isKiro && Number.isFinite(Number(entry.credits)) ? Number(entry.credits) : null;
+    if (nativeCredits != null) tokens.kiro_credits = nativeCredits;
     const promptTokens = tokens.prompt_tokens || tokens.input_tokens || 0;
     const completionTokens = tokens.completion_tokens || tokens.output_tokens || 0;
+    const metered = promptTokens > 0 || completionTokens > 0 || nativeCredits != null;
     let inserted = false;
 
     // All 3 writes (history insert, daily upsert, lifetime counter) in ONE transaction.
@@ -307,15 +311,39 @@ export async function saveRequestUsage(entry) {
       db.run(`INSERT INTO _meta(key, value) VALUES('totalRequestsLifetime', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, [String(next)]);
       inserted = true;
 
-      if (inserted && entry.provider === "kiro") {
+      if (inserted && metered && providerId) {
         const period = monthKey(entry.timestamp);
-        if (entry.apiKey) {
-          upsertApiKeyUsage(db, { key: entry.apiKey, periodKey: period, inputTokens: promptTokens, outputTokens: completionTokens, credits: kiroCredits ?? 0 });
+        const credits = isKiro ? (nativeCredits ?? 0) : 0;
+        if (entry.apiKeyId) {
+          upsertApiKeyUsage(db, {
+            apiKeyId: entry.apiKeyId,
+            periodKey: period,
+            inputTokens: promptTokens,
+            outputTokens: completionTokens,
+            credits,
+          });
+          upsertApiKeyProviderUsage(db, {
+            apiKeyId: entry.apiKeyId,
+            provider: providerId,
+            periodKey: period,
+            inputTokens: promptTokens,
+            outputTokens: completionTokens,
+            credits,
+          });
         }
-        if (entry.connectionId) {
-          upsertKiroAccountUsage(db, { connectionId: entry.connectionId, periodKey: period, credits: kiroCredits ?? 0 });
+        if (isKiro && entry.connectionId) {
+          upsertKiroAccountUsage(db, {
+            connectionId: entry.connectionId,
+            periodKey: period,
+            credits: nativeCredits ?? 0,
+          });
         }
-        upsertTeamUsage(db, { periodKey: period, inputTokens: promptTokens, outputTokens: completionTokens, credits: kiroCredits ?? 0 });
+        upsertTeamUsage(db, {
+          periodKey: period,
+          inputTokens: promptTokens,
+          outputTokens: completionTokens,
+          credits,
+        });
       }
     });
 

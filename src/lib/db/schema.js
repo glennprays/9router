@@ -3,7 +3,7 @@
 // pre-change safety backup in migrate.js: when the stored version is lower,
 // one lightweight DB backup is taken before applying schema changes. Forgetting
 // to bump only skips that backup — it does NOT break the additive auto-sync.
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 export const PRAGMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -91,15 +91,42 @@ export const TABLES = {
   },
   apiKeyUsage: {
     columns: {
-      key: "TEXT NOT NULL",
+      apiKeyId: "TEXT NOT NULL",
       periodKey: "TEXT NOT NULL",
       inputTokens: "INTEGER DEFAULT 0",
       outputTokens: "INTEGER DEFAULT 0",
       credits: "REAL DEFAULT 0",
       updatedAt: "TEXT",
     },
-    primaryKey: "PRIMARY KEY (key, periodKey)",
+    primaryKey: "PRIMARY KEY (apiKeyId, periodKey)",
     indexes: ["CREATE INDEX IF NOT EXISTS idx_aku_period ON apiKeyUsage(periodKey)"],
+  },
+  apiKeyProviderBudget: {
+    columns: {
+      apiKeyId: "TEXT NOT NULL",
+      provider: "TEXT NOT NULL",
+      inputTokensMonthly: "INTEGER",
+      outputTokensMonthly: "INTEGER",
+      creditsMonthly: "REAL",
+      updatedAt: "TEXT",
+    },
+    primaryKey: "PRIMARY KEY (apiKeyId, provider)",
+    indexes: ["CREATE INDEX IF NOT EXISTS idx_akpb_key ON apiKeyProviderBudget(apiKeyId)"],
+  },
+  apiKeyProviderUsage: {
+    columns: {
+      apiKeyId: "TEXT NOT NULL",
+      provider: "TEXT NOT NULL",
+      periodKey: "TEXT NOT NULL",
+      inputTokens: "INTEGER DEFAULT 0",
+      outputTokens: "INTEGER DEFAULT 0",
+      credits: "REAL DEFAULT 0",
+      updatedAt: "TEXT",
+    },
+    primaryKey: "PRIMARY KEY (apiKeyId, provider, periodKey)",
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_akpu_key_period ON apiKeyProviderUsage(apiKeyId, periodKey)",
+    ],
   },
   teamBudgetPolicy: {
     columns: {
