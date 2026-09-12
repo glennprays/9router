@@ -9,16 +9,16 @@ import { getStatusVariant } from "@/shared/utils/connectionStatus";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import StatusAlert from "../endpoint/components/StatusAlert";
 import TeamAnalytics from "./TeamAnalytics";
-
+import ApiKeyBudgetModal from "./ApiKeyBudgetModal";
 // Dashboard-only budget warnings (design: warn at 80%, critical at 90%).
 const USAGE_WARN_PCT = 80;
 const USAGE_CRITICAL_PCT = 90;
 const BUDGET_STATUS_CLEAR_MS = 3000;
 
 const TEAM_BUDGET_FIELDS = [
-  { field: "inputTokensMonthly", usage: "inputTokens", label: "Monthly input tokens", short: "Input tokens", step: "1" },
-  { field: "outputTokensMonthly", usage: "outputTokens", label: "Monthly output tokens", short: "Output tokens", step: "1" },
-  { field: "creditsMonthly", usage: "credits", label: "Monthly Kiro credits", short: "Credits", step: "0.01" },
+  { field: "inputTokensMonthly", usage: "inputTokens", label: "Monthly input tokens (all providers)", short: "Input tokens", step: "1" },
+  { field: "outputTokensMonthly", usage: "outputTokens", label: "Monthly output tokens (all providers)", short: "Output tokens", step: "1" },
+  { field: "creditsMonthly", usage: "credits", label: "Monthly Kiro credits", short: "Kiro credits", step: "0.01" },
 ];
 
 // Activity period selector (same value set as the Usage page).
@@ -84,11 +84,8 @@ UsageBadge.propTypes = {
 export default function TeamPageClient() {
   const [keys, setKeys] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [showAddModal, setShowAddModal] = useState(false);
-  const [newKeyName, setNewKeyName] = useState("");
-  const [newInputTokensMonthly, setNewInputTokensMonthly] = useState("");
-  const [newOutputTokensMonthly, setNewOutputTokensMonthly] = useState("");
-  const [newCreditsMonthly, setNewCreditsMonthly] = useState("");
+  const [budgetModal, setBudgetModal] = useState(null);
+  const [routableProviders, setRoutableProviders] = useState([]);
   const [createdKey, setCreatedKey] = useState(null);
   const [createdKeyMode, setCreatedKeyMode] = useState("created");
   const [teamBudget, setTeamBudget] = useState(null);
@@ -123,7 +120,10 @@ export default function TeamPageClient() {
   const fetchKeys = () =>
     fetch("/api/keys")
       .then((res) => (res.ok ? res.json() : null))
-      .then((data) => data?.keys || []);
+      .then((data) => {
+        setRoutableProviders(data?.routableProviders || []);
+        return data?.keys || [];
+      });
 
   // All-provider activity from the usage stats endpoint. Rows are keyed per
   // model|provider and expose a masked key, so aggregate them per key name.
@@ -202,37 +202,6 @@ export default function TeamPageClient() {
     fetchActivity();
   }, [fetchActivity]);
 
-  const handleCreateKey = async () => {
-    if (!newKeyName.trim()) return;
-
-    const toLimit = (value) => value === "" ? null : Number(value);
-    try {
-      const res = await fetch("/api/keys", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: newKeyName,
-          inputTokensMonthly: toLimit(newInputTokensMonthly),
-          outputTokensMonthly: toLimit(newOutputTokensMonthly),
-          creditsMonthly: toLimit(newCreditsMonthly),
-        }),
-      });
-      const data = await res.json();
-
-      if (res.ok) {
-        setCreatedKeyMode("created");
-        setCreatedKey(data.key);
-        await fetchData();
-        setNewKeyName("");
-        setNewInputTokensMonthly("");
-        setNewOutputTokensMonthly("");
-        setNewCreditsMonthly("");
-        setShowAddModal(false);
-      }
-    } catch (error) {
-      console.log("Error creating key:", error);
-    }
-  };
 
   const handleDeleteKey = async (id) => {
     setConfirmState({
@@ -272,13 +241,20 @@ export default function TeamPageClient() {
     }
   };
 
-  const handleResetKeyUsage = async (id) => {
-    try {
-      const res = await fetch(`/api/keys/${id}/reset-usage`, { method: "POST" });
-      if (res.ok) await fetchData();
-    } catch (error) {
-      console.log("Error resetting key usage:", error);
-    }
+  const handleResetKeyUsage = (id, name) => {
+    setConfirmState({
+      title: "Reset API key usage",
+      message: `Reset current-month global and provider usage for "${name}"? Prior periods and request history remain unchanged.`,
+      onConfirm: async () => {
+        setConfirmState(null);
+        try {
+          const res = await fetch(`/api/keys/${id}/reset-usage`, { method: "POST" });
+          if (res.ok) await fetchData();
+        } catch (error) {
+          console.log("Error resetting key usage:", error);
+        }
+      },
+    });
   };
 
   const showBudgetStatus = (scope, type, message) => {
@@ -325,7 +301,7 @@ export default function TeamPageClient() {
   const handleResetTeamUsage = async () => {
     setConfirmState({
       title: "Reset Team Usage",
-      message: "Reset all Team Kiro usage for every period?",
+      message: "Reset all Team usage across providers?",
       onConfirm: async () => {
         setConfirmState(null);
         try {
@@ -474,7 +450,7 @@ export default function TeamPageClient() {
             <span className="material-symbols-outlined text-primary">vpn_key</span>
             Members (API keys)
           </h2>
-          <Button icon="add" onClick={() => setShowAddModal(true)}>
+          <Button icon="add" onClick={() => setBudgetModal({ mode: "create", key: null })}>
             Create Key
           </Button>
         </div>
@@ -486,7 +462,7 @@ export default function TeamPageClient() {
             </div>
             <p className="text-text-main font-medium mb-1">No API keys yet</p>
             <p className="text-sm text-text-muted mb-4">Create your first API key to get started</p>
-            <Button icon="add" onClick={() => setShowAddModal(true)}>
+            <Button icon="add" onClick={() => setBudgetModal({ mode: "create", key: null })}>
               Create Key
             </Button>
           </div>
@@ -502,6 +478,19 @@ export default function TeamPageClient() {
             </div>
             {keys.map((key) => {
               const activity = activityByKey[key.name];
+              const providerPolicyCount = (key.providerBudgets || []).filter((row) => (
+                row.inputTokensMonthly != null
+                || row.outputTokensMonthly != null
+                || row.creditsMonthly != null
+              )).length;
+              const usageDimensions = [
+                ["inputTokens", key.inputTokensMonthly],
+                ["outputTokens", key.outputTokensMonthly],
+                ["credits", key.creditsMonthly],
+              ].filter(([, limit]) => limit != null);
+              const highestUsage = usageDimensions
+                .map(([usage, limit]) => ({ usage, limit, used: key.usage?.[usage] || 0 }))
+                .sort((a, b) => (b.limit > 0 ? b.used / b.limit : 1) - (a.limit > 0 ? a.used / a.limit : 1))[0];
               return (
                 <div
                   key={key.id}
@@ -537,11 +526,15 @@ export default function TeamPageClient() {
                     {key.isActive === false && (
                       <p className="text-xs text-orange-500 mt-1">Paused</p>
                     )}
-                    <p className="text-xs text-text-muted mt-1">
-                      Monthly usage: In {fmtNum(key.usage?.inputTokens || 0)} / {key.inputTokensMonthly == null ? "unlimited" : fmtNum(key.inputTokensMonthly)}{remainingHint(key.usage?.inputTokens || 0, key.inputTokensMonthly)}
-                      {" · "}Out {fmtNum(key.usage?.outputTokens || 0)} / {key.outputTokensMonthly == null ? "unlimited" : fmtNum(key.outputTokensMonthly)}{remainingHint(key.usage?.outputTokens || 0, key.outputTokensMonthly)}
-                      {" · "}Credits {fmtNum(key.usage?.credits || 0)} / {key.creditsMonthly == null ? "unlimited" : fmtNum(key.creditsMonthly)}{remainingHint(key.usage?.credits || 0, key.creditsMonthly)}
-                    </p>
+                    <div className="flex items-center gap-2 flex-wrap text-xs text-text-muted mt-1">
+                      <span>
+                        Global usage (all providers): In {fmtNum(key.usage?.inputTokens || 0)} / {key.inputTokensMonthly == null ? "unlimited" : fmtNum(key.inputTokensMonthly)}
+                        {" · "}Out {fmtNum(key.usage?.outputTokens || 0)} / {key.outputTokensMonthly == null ? "unlimited" : fmtNum(key.outputTokensMonthly)}
+                        {" · "}Kiro credits {fmtNum(key.usage?.credits || 0)} / {key.creditsMonthly == null ? "unlimited" : fmtNum(key.creditsMonthly)}
+                      </span>
+                      {highestUsage && <UsageBadge used={highestUsage.used} limit={highestUsage.limit} />}
+                      <span>{providerPolicyCount} provider limit{providerPolicyCount === 1 ? "" : "s"}</span>
+                    </div>
                     <p className="text-xs text-text-muted mt-0.5">
                       Activity ({activityPeriod}, all providers): {fmtNum(activity?.requests || 0)} req
                       {" · "}{fmtNum((activity?.promptTokens || 0) + (activity?.completionTokens || 0))} tokens
@@ -570,9 +563,17 @@ export default function TeamPageClient() {
                     />
                     <Button
                       variant="ghost"
+                      icon="tune"
+                      onClick={() => setBudgetModal({ mode: "edit", key })}
+                      title="Edit limits"
+                    >
+                      <span className="hidden sm:inline">Edit limits</span>
+                    </Button>
+                    <Button
+                      variant="ghost"
                       icon="restart_alt"
-                      onClick={() => handleResetKeyUsage(key.id)}
-                      title="Reset usage"
+                      onClick={() => handleResetKeyUsage(key.id, key.name)}
+                      title="Reset current-month usage"
                     >
                       <span className="hidden sm:inline">Reset usage</span>
                     </Button>
@@ -598,11 +599,11 @@ export default function TeamPageClient() {
         )}
       </Card>
 
-      {/* Team Kiro Budget */}
+      {/* Team cross-provider budget */}
       <Card>
         <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
           <span className="material-symbols-outlined text-primary">account_balance</span>
-          Team Kiro Budget
+          Team budget (all providers)
         </h2>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {TEAM_BUDGET_FIELDS.map(({ field, usage, label, step }) => (
@@ -626,7 +627,7 @@ export default function TeamPageClient() {
               type: teamWarnings.some(({ level }) => level.level !== "warning") ? "error" : "warning",
               message: teamWarnings
                 .map(({ short, level }) => (level.level === "exhausted"
-                  ? `${short}: monthly team limit reached — Kiro requests are rejected until usage is reset or the limit is raised`
+                  ? `${short}: monthly team limit reached — affected token-metered traffic is rejected until usage is reset or the limit is raised`
                   : `${short}: ${level.pct}% of the monthly team limit used`))
                 .join(" · "),
             }}
@@ -729,71 +730,25 @@ export default function TeamPageClient() {
 
         </>
       )}
-
-      {/* Add Key Modal */}
-      <Modal
-        isOpen={showAddModal}
-        title="Create API Key"
-        onClose={() => {
-          setShowAddModal(false);
-          setNewKeyName("");
-          setNewInputTokensMonthly("");
-          setNewOutputTokensMonthly("");
-          setNewCreditsMonthly("");
+      <ApiKeyBudgetModal
+        key={budgetModal ? `${budgetModal.mode}-${budgetModal.key?.id || "new"}` : "closed"}
+        isOpen={!!budgetModal}
+        mode={budgetModal?.mode || "create"}
+        keyData={budgetModal?.key || null}
+        routableProviders={routableProviders}
+        onClose={() => setBudgetModal(null)}
+        onSaved={async () => {
+          await fetchData();
         }}
-      >
-        <div className="flex flex-col gap-4">
-          <Input
-            label="Key Name"
-            value={newKeyName}
-            onChange={(e) => setNewKeyName(e.target.value)}
-            placeholder="Production Key"
-          />
-          <Input
-            label="Monthly input token limit"
-            type="number"
-            min="0"
-            value={newInputTokensMonthly}
-            onChange={(e) => setNewInputTokensMonthly(e.target.value)}
-            placeholder="Unlimited"
-          />
-          <Input
-            label="Monthly output token limit"
-            type="number"
-            min="0"
-            value={newOutputTokensMonthly}
-            onChange={(e) => setNewOutputTokensMonthly(e.target.value)}
-            placeholder="Unlimited"
-          />
-          <Input
-            label="Monthly Kiro credit limit"
-            type="number"
-            min="0"
-            step="0.01"
-            value={newCreditsMonthly}
-            onChange={(e) => setNewCreditsMonthly(e.target.value)}
-            placeholder="Unlimited"
-          />
-          <div className="flex gap-2">
-            <Button onClick={handleCreateKey} fullWidth disabled={!newKeyName.trim()}>
-              Create
-            </Button>
-            <Button
-              onClick={() => {
-                setShowAddModal(false);
-                setNewKeyName("");
-                setNewInputTokensMonthly("");
-                setNewOutputTokensMonthly("");
-                setNewCreditsMonthly("");
-              }}
-              variant="ghost"
-              fullWidth
-            >
-              Cancel
-            </Button>
-          </div>
-        </div>
-      </Modal>
+        onCreated={async (data) => {
+          if (data?.key) {
+            setCreatedKeyMode("created");
+            setCreatedKey(data.key);
+          }
+          await fetchData();
+        }}
+      />
+
 
       {/* Created / Rotated Key Modal */}
       <Modal
