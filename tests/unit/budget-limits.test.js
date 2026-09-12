@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { parseLimit, parseLimits } from "../../src/lib/http/budgetLimits.js";
+import { parseLimit, parseLimits, parseProviderBudgets } from "../../src/lib/http/budgetLimits.js";
 
 describe("parseLimit", () => {
   it.each([
@@ -54,6 +54,53 @@ describe("parseLimits", () => {
   it("supports custom fields and returns the first error", () => {
     expect(parseLimits({ first: "bad", second: -1 }, ["first", "second"])).toEqual({
       error: "first must be a non-negative number",
+    });
+  });
+});
+
+describe("parseProviderBudgets", () => {
+  it("canonicalizes built-in aliases and preserves provider-node ids", () => {
+    expect(parseProviderBudgets([
+      { provider: "ag", inputTokensMonthly: "10", outputTokensMonthly: "", creditsMonthly: null },
+      { provider: "my-node", inputTokensMonthly: 5 },
+    ])).toEqual({
+      value: [
+        { provider: "antigravity", inputTokensMonthly: 10, outputTokensMonthly: null, creditsMonthly: null },
+        { provider: "my-node", inputTokensMonthly: 5, outputTokensMonthly: null, creditsMonthly: null },
+      ],
+    });
+  });
+
+  it("removes rows with no configured limit and normalizes an empty array to null", () => {
+    expect(parseProviderBudgets([{ provider: "openai" }])).toEqual({ value: null });
+    expect(parseProviderBudgets([])).toEqual({ value: null });
+  });
+
+  it("rejects duplicates, invalid values, and non-Kiro credits", () => {
+    expect(parseProviderBudgets([
+      { provider: "ag", inputTokensMonthly: 1 },
+      { provider: "antigravity", outputTokensMonthly: 2 },
+    ])).toEqual({ error: "Duplicate provider budget: antigravity" });
+    expect(parseProviderBudgets([
+      { provider: "openai", inputTokensMonthly: Infinity },
+    ])).toEqual({ error: "inputTokensMonthly must be a non-negative number" });
+    expect(parseProviderBudgets([
+      { provider: "openai", creditsMonthly: 1 },
+    ])).toEqual({ error: "creditsMonthly is only supported for kiro" });
+  });
+
+  it("parses providerBudgets only when present on the parent payload", () => {
+    expect(parseLimits({ inputTokensMonthly: 10 })).toEqual({
+      limits: { inputTokensMonthly: 10 },
+    });
+    expect(parseLimits({
+      providerBudgets: [{ provider: "kiro", creditsMonthly: 1 }],
+    })).toEqual({
+      limits: {
+        providerBudgets: [
+          { provider: "kiro", inputTokensMonthly: null, outputTokensMonthly: null, creditsMonthly: 1 },
+        ],
+      },
     });
   });
 });

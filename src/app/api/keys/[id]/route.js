@@ -1,6 +1,12 @@
 import { NextResponse } from "next/server";
-import { deleteApiKey, getApiKeyById, updateApiKey } from "@/lib/localDb";
+import {
+  deleteApiKey,
+  getApiKeyById,
+  getApiKeyProviderBudgets,
+  updateApiKey,
+} from "@/lib/localDb";
 import { parseLimits } from "@/lib/http/budgetLimits.js";
+import { validateRoutableProviderBudgets } from "@/lib/http/providerRoutability.js";
 
 // GET /api/keys/[id] - Get single key
 export async function GET(request, { params }) {
@@ -10,7 +16,8 @@ export async function GET(request, { params }) {
     if (!key) {
       return NextResponse.json({ error: "Key not found" }, { status: 404 });
     }
-    return NextResponse.json({ key });
+    const providerBudgets = await getApiKeyProviderBudgets(id);
+    return NextResponse.json({ key: { ...key, providerBudgets } });
   } catch (error) {
     console.log("Error fetching key:", error);
     return NextResponse.json({ error: "Failed to fetch key" }, { status: 500 });
@@ -32,6 +39,17 @@ export async function PUT(request, { params }) {
     const parsed = parseLimits(body);
     if (parsed.error) {
       return NextResponse.json({ error: parsed.error }, { status: 400 });
+    }
+
+    const hasProviderBudgets = Object.prototype.hasOwnProperty.call(body, "providerBudgets");
+    if (hasProviderBudgets) {
+      const existingBudgets = await getApiKeyProviderBudgets(id);
+      const staleProviders = existingBudgets.map((budget) => budget.provider);
+      try {
+        await validateRoutableProviderBudgets(parsed.limits.providerBudgets, { allow: staleProviders });
+      } catch (error) {
+        return NextResponse.json({ error: error.message }, { status: 400 });
+      }
     }
 
     const updateData = { ...parsed.limits };
