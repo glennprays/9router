@@ -1,3 +1,16 @@
+# v0.5.70 (2026-09-12)
+
+## Features
+- **Budgets**: monthly per-provider token limits for every API key — global key, per-provider, and Team ceilings enforced together on chat and embeddings; Kiro keeps native credit budgets and per-account pool ceilings
+- **Usage accounting**: key usage now keyed by immutable API-key ID (SQLite migration v4 rebuilds the legacy raw-key counter; month-to-date usage is rebuilt from request history), so rotation preserves usage and deletion cleans budgets without touching history
+- **API**: `GET /api/keys` returns per-provider policy + current-period usage with remaining values and the routable provider list; `POST /api/keys` / `PUT /api/keys/[id]` accept validated `providerBudgets` (canonical aliases, Kiro-only credits, routability check, atomic replace); new scoped resets `POST /api/keys/[id]/reset-usage` and `POST /api/keys/[id]/providers/[provider]/reset-usage` clear only current-period counters
+- **API**: key-authenticated `GET /v1/usage` and `GET /v1/quota` let callers inspect their own quota (`used/limit/remaining` per metric, per provider) without exposing keys, IDs, Team, or upstream data
+- **Dashboard**: API-key limits editor with per-provider rows, Kiro-only credit metric, exhausted badges, per-row confirmed usage reset, and provider-limit counts on member rows; Team budget card relabeled as cross-provider
+
+## Fixes
+- **Security**: restore the dropped `requireApiKey` validation in the chat handler — unknown caller keys were accepted when API-key enforcement was enabled (embeddings path was unaffected)
+- **Budgets**: embeddings no longer routes to Kiro accounts already excluded by credit admission
+
 # v0.5.69 (2026-09-05)
 
 ## Features
